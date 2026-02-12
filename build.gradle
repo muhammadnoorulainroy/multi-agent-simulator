@@ -1,0 +1,24 @@
+plugins {
+  id 'java'
+  id 'application'
+}
+
+defaultTasks 'build'
+
+repositories {
+  mavenCentral()
+
+  flatDir {
+    dirs 'lib'
+  }
+}
+
+dependencies {
+  implementation('org.ini4j:ini4j:0.5.4')
+  implementation files('lib/maqit-simulator-1.0.jar')
+}
+
+tasks.named('run') {
+  classpath = sourceSets.main.runtimeClasspath
+  mainClass = 'fr.emse.BasicSimulator'
+}
