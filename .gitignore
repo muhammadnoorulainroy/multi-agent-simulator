@@ -1,2 +1,22 @@
 .gradle
-build
+build/
+
+# Temp folders (decompiled classes for exploration)
+temp_decompile/
+temp/
+
+# Extracted class files from JAR exploration (only at project root)
+/fr/
+
+# IDE files
+.idea/
+*.iml
+.vscode/
+*.class
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
