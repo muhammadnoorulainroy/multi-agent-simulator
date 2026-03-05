@@ -22,3 +22,23 @@ tasks.named('run') {
   classpath = sourceSets.main.runtimeClasspath
   mainClass = 'fr.emse.BasicSimulator'
 }
+
+// Task to run warehouse simulation
+tasks.register('warehouse', JavaExec) {
+  classpath = sourceSets.main.runtimeClasspath
+  mainClass = 'fr.emse.warehouse.WarehouseSimulator'
+}
+
+// Task to run reference model
+tasks.register('reference', JavaExec) {
+  classpath = sourceSets.main.runtimeClasspath
+  mainClass = 'fr.emse.warehouse.WarehouseSimulator'
+  args = ['reference']
+}
+
+// Task to run enhanced model
+tasks.register('enhanced', JavaExec) {
+  classpath = sourceSets.main.runtimeClasspath
+  mainClass = 'fr.emse.warehouse.WarehouseSimulator'
+  args = ['enhanced']
+}
