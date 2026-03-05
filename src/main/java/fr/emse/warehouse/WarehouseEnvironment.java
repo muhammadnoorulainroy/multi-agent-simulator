@@ -38,6 +38,10 @@ public class WarehouseEnvironment {
     // ==================== Statistics ====================
     private int totalDeliveryTime;
     private int currentTick;
+
+    // ==================== Generation Control ====================
+    /** When false, tick() only advances the clock — no new pallets are generated. */
+    private boolean generationEnabled = true;
     
     /**
      * Creates a new warehouse environment.
@@ -104,15 +108,21 @@ public class WarehouseEnvironment {
     
     /**
      * Process one simulation tick.
-     * Generates new pallets at entry areas based on their probability distributions.
-     * 
+     * When generationEnabled is true, generates new pallets at entry areas.
+     * When false (cap reached), only advances the internal clock so delivery
+     * timestamps remain accurate.
+     *
      * @param tick Current simulation tick
-     * @return List of newly arrived pallets
+     * @return List of newly arrived pallets (empty when generation is disabled)
      */
     public List<Pallet> tick(int tick) {
         this.currentTick = tick;
         List<Pallet> newPallets = new ArrayList<>();
-        
+
+        if (!generationEnabled) {
+            return newPallets;  // Clock advanced; no pallet generation
+        }
+
         // Check each entry area for new pallet arrivals
         for (EntryArea entry : entryAreas) {
             Pallet newPallet = entry.tick(tick);
@@ -122,8 +132,17 @@ public class WarehouseEnvironment {
                 newPallets.add(newPallet);
             }
         }
-        
+
         return newPallets;
+    }
+
+    /** Stop all entry areas from generating new pallets (call when pallet cap is reached). */
+    public void stopGeneration() {
+        this.generationEnabled = false;
+    }
+
+    public boolean isGenerationEnabled() {
+        return generationEnabled;
     }
     
     // ==================== Pallet Operations ====================

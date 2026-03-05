@@ -197,8 +197,11 @@ public class WarehouseSimulator extends ColorSimFactory {
         // Battery prediction (enforced in AMRobot.canCompleteTask):
         //   required = (dist_to_pickup + dist_to_delivery + dist_to_nearest_recharge) × 1.2
         //   If battery < required → go to C3 first (center), then accept the task
-        warehouse.addRechargeStation(new int[]{2,             3});               // C1 near Z1
-        warehouse.addRechargeStation(new int[]{sp.rows - 3,   3});               // C2 near Z2
+        // C1: one row BELOW Z1 so it doesn't block the row-2 approach corridor to Z1
+        warehouse.addRechargeStation(new int[]{4,             2});               // C1 near Z1
+        // C2: one row ABOVE Z2 so it doesn't block the bottom approach corridor to Z2
+        warehouse.addRechargeStation(new int[]{sp.rows - 5,   2});               // C2 near Z2
+        // C3: center — emergency mid-route station
         warehouse.addRechargeStation(new int[]{sp.rows / 2,   sp.columns / 2}); // C3 center
     }
     
@@ -410,29 +413,32 @@ public class WarehouseSimulator extends ColorSimFactory {
      * Generate new pallets at entry areas.
      */
     private void generatePallets(int tick) {
-        // Always advance the warehouse tick so internal timing (e.g., delivery timestamps
-        // via currentTick in WarehouseEnvironment) stays accurate even after the pallet
-        // generation cap is reached. Stopping tick() would leave deliveries timestamped
-        // with a stale tick and produce incorrect delivery-time statistics.
+        // warehouse.tick() advances the internal clock AND generates pallets.
+        // Once the cap is reached we call stopGeneration() so entry areas stop
+        // queuing new pallets — warehouse.tick() then only advances the clock,
+        // keeping delivery timestamps accurate without bloating entry queues.
         List<Pallet> newPallets = warehouse.tick(tick);
-
-        if (palletsGenerated >= totalPalletsToGenerate) {
-            return;  // Cap reached — do not enqueue any more pallets
-        }
 
         for (Pallet pallet : newPallets) {
             if (palletsGenerated >= totalPalletsToGenerate) {
-                break;  // Respect the total pallet cap mid-batch
+                // Reached cap mid-batch — disable further generation and stop
+                warehouse.stopGeneration();
+                break;
             }
             palletsGenerated++;
-            
+
             if (this.sp.debug == 1) {
                 System.out.println("New pallet: " + pallet);
             }
-            
+
             // For reference model: create an AMR for each new pallet
             if (mode == SimulationMode.REFERENCE) {
                 createAMRForPallet(pallet);
+            }
+
+            // Check again after incrementing (handles exactly-cap case)
+            if (palletsGenerated >= totalPalletsToGenerate) {
+                warehouse.stopGeneration();
             }
         }
     }
@@ -628,24 +634,54 @@ public class WarehouseSimulator extends ColorSimFactory {
             if (amr.getState() == AMRobot.State.PICKING_UP) {
                 handlePickup(amr);
             }
-            
-            // Check if AMR is in DELIVERED state at exit area
+
+            // Check if AMR is in DELIVERED state (reached exact exit cell)
             if (amr.getState() == AMRobot.State.DELIVERED) {
                 handleDelivery(amr, tick);
+                continue;
+            }
+
+            // Proximity delivery: if AMR is DELIVERING and within 2 cells of its exit
+            // area, accept the delivery without forcing it onto the exact exit cell.
+            // Threshold of 2 avoids last-step gridlock when robots converge on exits.
+            if (amr.getState() == AMRobot.State.DELIVERING && amr.getCarriedPallet() != null) {
+                int[] exitPos = warehouse.getExitPosition(amr.getCarriedPallet().getDestination());
+                if (exitPos != null) {
+                    int dist = warehouse.manhattanDistance(amr.getLocation(), exitPos);
+                    if (dist <= 2) {
+                        // Close enough — count as delivered
+                        amr.setState(AMRobot.State.DELIVERED);
+                        handleDelivery(amr, tick);
+                    }
+                }
             }
         }
     }
     
     /**
      * Handle pallet pickup at entry area.
+     * Accepts pickup from the exact entry cell OR any adjacent cell (distance ≤ 1)
+     * so robots don't have to queue on the exact entry position.
      */
     private void handlePickup(AMRobot amr) {
+        // Try exact position first
         Pallet pallet = warehouse.pickupPalletAtPosition(amr.getLocation());
-        
+
+        // If no pallet at exact position, try adjacent entry areas
+        if (pallet == null) {
+            for (EntryArea entry : warehouse.getEntryAreas()) {
+                if (warehouse.manhattanDistance(amr.getLocation(), entry.getPosition()) <= 1
+                        && entry.hasPallets()) {
+                    pallet = entry.pickupPallet();
+                    if (pallet != null) break;
+                }
+            }
+        }
+
         if (pallet != null) {
             int[] exitPos = warehouse.getExitPosition(pallet.getDestination());
             amr.pickupPallet(pallet, exitPos);
-            
+
             if (this.sp.debug == 1) {
                 System.out.println(amr.getName() + " picked up " + pallet);
             }

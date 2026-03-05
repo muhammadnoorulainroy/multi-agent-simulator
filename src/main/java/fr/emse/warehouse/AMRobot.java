@@ -84,6 +84,8 @@ public class AMRobot extends ColorInteractionRobot<ColorSimpleCell> {
     private int robotPriority;         // Priority based on robot ID (lower = higher priority)
     private static final int MAX_WAIT_TICKS = 2;    // Max ticks to wait before trying alternative
     private static final int MAX_STUCK_COUNT = 3;   // Max times to be stuck before full replan
+    private static final int TIMEOUT_DELIVERY_TICKS = 40; // Ticks stuck before forced timeout-delivery
+    private int deliveryStuckTicks = 0;              // Running count of ticks stuck while DELIVERING
     
     /**
      * Creates an AMR for the REFERENCE MODEL (no battery, no communication).
@@ -238,9 +240,24 @@ public class AMRobot extends ColorInteractionRobot<ColorSimpleCell> {
         // Check if we're stuck at the same position
         if (lastPosition != null && lastPosition[0] == currentPos[0] && lastPosition[1] == currentPos[1]) {
             stuckCounter++;
+
+            // Track delivery-specific stuck time and force timeout-delivery when exceeded.
+            // This prevents permanent gridlock in the Reference Model where multiple robots
+            // converge on the same narrow corridor to the exit.
+            if (state == State.DELIVERING) {
+                deliveryStuckTicks++;
+                if (deliveryStuckTicks >= TIMEOUT_DELIVERY_TICKS) {
+                    // Force immediate delivery to unblock the simulation
+                    state = State.DELIVERED;
+                    palletsDelivered++;
+                    deliveryStuckTicks = 0;
+                    return;
+                }
+            }
         } else {
             stuckCounter = 0;
             waitCounter = 0;
+            deliveryStuckTicks = 0;  // Reset timeout on any movement
         }
         lastPosition = currentPos.clone();
         

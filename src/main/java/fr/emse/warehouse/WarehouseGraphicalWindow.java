@@ -327,42 +327,55 @@ public class WarehouseGraphicalWindow extends JFrame {
     }
     
     /**
-     * Create a recharge station icon (battery/charging symbol).
+     * Create a recharge station icon — a horizontal battery outline filled green
+     * with a yellow lightning-bolt overlay.
      */
     private BufferedImage createRechargeIcon(int size) {
         BufferedImage img = new BufferedImage(size, size, BufferedImage.TYPE_INT_ARGB);
         Graphics2D g = img.createGraphics();
         g.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
-        
-        // Purple background
-        g.setColor(new Color(180, 100, 220));
-        g.fillRect(0, 0, size, size);
-        
-        // Battery shape
-        g.setColor(Color.WHITE);
-        int battW = size * 2/3;
+
+        int pad   = size / 8;
+        int termW = Math.max(3, size / 8);
+        int termH = Math.max(4, size / 4);
+
+        // Battery outline (leaves room on right for terminal)
+        int battX = pad;
+        int battY = size / 4;
+        int battW = size - pad * 2 - termW - 1;
         int battH = size / 2;
-        int battX = (size - battW) / 2;
-        int battY = (size - battH) / 2;
-        g.fillRoundRect(battX, battY, battW, battH, 4, 4);
-        
-        // Battery terminal
-        int termW = size / 8;
-        int termH = battH / 2;
-        g.fillRect(battX + battW, battY + (battH - termH)/2, termW, termH);
-        
-        // Lightning bolt
-        g.setColor(new Color(255, 220, 0));  // Yellow
-        int boltX = size / 2;
-        int[] xPts = {boltX, boltX - 3, boltX, boltX + 3};
-        int[] yPts = {battY + 2, battY + battH/2, battY + battH/2 - 2, battY + battH - 2};
-        g.fillPolygon(xPts, yPts, 4);
-        
-        // Border
-        g.setColor(new Color(120, 60, 150));
+
+        // Outer shell
+        g.setColor(new Color(220, 220, 220));
+        g.fillRoundRect(battX, battY, battW, battH, 5, 5);
+        g.setColor(new Color(80, 80, 80));
         g.setStroke(new BasicStroke(2));
-        g.drawRect(1, 1, size - 2, size - 2);
-        
+        g.drawRoundRect(battX, battY, battW, battH, 5, 5);
+
+        // Terminal nub
+        g.setColor(new Color(80, 80, 80));
+        g.fillRoundRect(battX + battW, battY + (battH - termH) / 2, termW, termH, 2, 2);
+
+        // Fill level (~80% green)
+        int fillW = (int)(battW * 0.80) - 4;
+        g.setColor(new Color(40, 200, 80));
+        g.fillRoundRect(battX + 2, battY + 2, fillW, battH - 4, 4, 4);
+
+        // Lightning bolt (yellow) centred in battery
+        g.setColor(new Color(255, 230, 0));
+        int bx = battX + battW / 2;
+        int by = battY + 2;
+        int bh = battH - 4;
+        int bw = Math.max(4, battW / 4);
+        // Top-right to mid-left to bottom-right zig-zag
+        int[] xb = { bx + bw/2,  bx - bw/4,  bx + bw/4,  bx - bw/2 };
+        int[] yb = { by,          by + bh/2,   by + bh/2,  by + bh   };
+        g.fillPolygon(xb, yb, 4);
+        // Outline the bolt
+        g.setColor(new Color(200, 150, 0));
+        g.setStroke(new BasicStroke(0.8f));
+        g.drawPolygon(xb, yb, 4);
+
         g.dispose();
         return img;
     }
@@ -420,29 +433,38 @@ public class WarehouseGraphicalWindow extends JFrame {
 
         // ── LAYER 1b: fixed area backgrounds (from WarehouseEnvironment) ───
         if (warehouseEnv != null) {
-            // Entry areas — green
+            Font labelFont = new Font("SansSerif", Font.BOLD, Math.max(7, Math.min(cellHeight / 2, 12)));
+            g.setFont(labelFont);
+
+            // Entry areas — green (2 rows × 1 col)
             for (EntryArea entry : warehouseEnv.getEntryAreas()) {
-                drawAreaBackground(g, entry.getX(), entry.getY(), COLOR_ENTRY_BG, 2, 1);
+                int r = entry.getX(), c = entry.getY();
+                drawAreaCells(g, r, c, 2, 1, COLOR_ENTRY_BG);
+                drawIconInArea(g, "entry", r, c, 2, 1);
+                drawAreaLabel(g, r, c, entry.getId(), Color.WHITE);
             }
-            // Exit areas — dark red (2×2 to mimic hatched ovals)
+            // Exit areas — dark red (2×2)
             for (ExitArea exit : warehouseEnv.getExitAreas()) {
-                drawAreaBackground(g, exit.getX(), exit.getY(), COLOR_EXIT_BG, 2, 2);
+                int r = exit.getX(), c = exit.getY();
+                drawAreaCells(g, r, c, 2, 2, COLOR_EXIT_BG);
+                drawIconInArea(g, "exit", r, c, 2, 2);
+                drawAreaLabel(g, r, c, exit.getId(), Color.WHITE);
             }
             // Intermediate areas — steel blue (2×2)
             for (IntermediateArea inter : warehouseEnv.getIntermediateAreas()) {
-                drawAreaBackground(g, inter.getX(), inter.getY(), COLOR_INTER_BG, 2, 2);
+                int r = inter.getX(), c = inter.getY();
+                drawAreaCells(g, r, c, 2, 2, COLOR_INTER_BG);
+                drawIconInArea(g, "intermediate", r, c, 2, 2);
+                drawAreaLabel(g, r, c, inter.getId(), Color.WHITE);
             }
-            // Recharge stations — purple (1×1)
+            // Recharge stations — purple (1×1) with battery icon
+            int idx = 1;
             for (int[] pos : warehouseEnv.getRechargeStations()) {
-                drawAreaBackground(g, pos[0], pos[1], COLOR_RECHARGE_BG, 1, 1);
+                drawAreaCells(g, pos[0], pos[1], 1, 1, COLOR_RECHARGE_BG);
+                drawIconInArea(g, "recharge", pos[0], pos[1], 1, 1);
+                drawAreaLabel(g, pos[0], pos[1], "C" + idx, Color.WHITE);
+                idx++;
             }
-
-            // Area labels (A1/A2/A3, Z1/Z2, I1/I2, C1/C2/C3)
-            g.setFont(new Font("SansSerif", Font.BOLD, Math.max(8, Math.min(cellHeight / 2, 13))));
-            drawAreaLabel(g, warehouseEnv.getEntryAreas());
-            drawExitLabel(g, warehouseEnv.getExitAreas());
-            drawInterLabel(g, warehouseEnv.getIntermediateAreas());
-            drawRechargeLabel(g, warehouseEnv.getRechargeStations());
         }
 
         // ── LAYER 2: grid lines ─────────────────────────────────────────────
@@ -490,67 +512,64 @@ public class WarehouseGraphicalWindow extends JFrame {
         }
     }
 
-    /** Draw a solid coloured background block spanning widthCells × heightCells. */
-    private void drawAreaBackground(Graphics2D g, int row, int col, Color bg,
-                                     int heightCells, int widthCells) {
-        int rows = grid.length;
-        int cols = grid[0].length;
-        for (int dr = 0; dr < heightCells; dr++) {
-            for (int dc = 0; dc < widthCells; dc++) {
-                int r = row + dr;
-                int c = col + dc;
-                if (r < 0 || r >= rows || c < 0 || c >= cols) continue;
-                int px = c * cellWidth;
-                int py = r * cellHeight;
-                g.setColor(bg);
-                g.fillRect(px + 1, py + 1, cellWidth - 2, cellHeight - 2);
-                // Hatch pattern for visual richness
-                g.setColor(bg.darker());
-                g.setStroke(new BasicStroke(1));
-                for (int d = 0; d < cellWidth + cellHeight; d += 7) {
-                    g.drawLine(px + d, py, px, py + d);
-                    g.drawLine(px + d, py + cellHeight, px + cellWidth, py + cellHeight - d);
-                }
-            }
-        }
+    /**
+     * Fill a rectangular area (heightCells × widthCells) with a solid background.
+     * No diagonal hatch — clean flat fill with a subtle inner border.
+     */
+    private void drawAreaCells(Graphics2D g, int row, int col,
+                                int heightCells, int widthCells, Color bg) {
+        int totalRows = grid.length;
+        int totalCols = grid[0].length;
+        // Full bounding box in pixels
+        int px = col * cellWidth;
+        int py = row * cellHeight;
+        int pw = widthCells  * cellWidth;
+        int ph = heightCells * cellHeight;
+        // Clip to grid
+        int maxW = (totalCols - col) * cellWidth;
+        int maxH = (totalRows - row) * cellHeight;
+        pw = Math.min(pw, maxW);
+        ph = Math.min(ph, maxH);
+        if (pw <= 0 || ph <= 0) return;
+
+        // Solid fill
+        g.setColor(bg);
+        g.fillRect(px + 1, py + 1, pw - 2, ph - 2);
+
+        // Subtle darker border around the whole block
+        g.setColor(bg.darker());
+        g.setStroke(new BasicStroke(1.5f));
+        g.drawRect(px + 1, py + 1, pw - 3, ph - 3);
+        g.setStroke(new BasicStroke(1));
     }
 
-    private void drawAreaLabel(Graphics2D g, java.util.List<EntryArea> areas) {
-        g.setColor(Color.WHITE);
-        for (EntryArea a : areas) {
-            int px = a.getY() * cellWidth  + 2;
-            int py = a.getX() * cellHeight + cellHeight - 3;
-            g.drawString(a.getId(), px, py);
-        }
+    /**
+     * Draw a cached icon centred inside a multi-cell area block.
+     */
+    private void drawIconInArea(Graphics2D g, String iconKey,
+                                 int row, int col, int heightCells, int widthCells) {
+        BufferedImage icon = iconCache.get(iconKey);
+        if (icon == null) return;
+        int areaPixW = widthCells  * cellWidth;
+        int areaPixH = heightCells * cellHeight;
+        // Scale icon to fit nicely (80 % of the smaller dimension)
+        int maxSize = (int)(Math.min(areaPixW, areaPixH) * 0.80);
+        if (maxSize < 6) return;
+        int ix = col * cellWidth  + (areaPixW - maxSize) / 2;
+        int iy = row * cellHeight + (areaPixH - maxSize) / 2;
+        g.drawImage(icon, ix, iy, maxSize, maxSize, null);
     }
 
-    private void drawExitLabel(Graphics2D g, java.util.List<ExitArea> areas) {
-        g.setColor(Color.WHITE);
-        for (ExitArea a : areas) {
-            int px = a.getY() * cellWidth  + 2;
-            int py = a.getX() * cellHeight + cellHeight - 3;
-            g.drawString(a.getId(), px, py);
-        }
-    }
-
-    private void drawInterLabel(Graphics2D g, java.util.List<IntermediateArea> areas) {
-        g.setColor(Color.WHITE);
-        for (IntermediateArea a : areas) {
-            int px = a.getY() * cellWidth  + 2;
-            int py = a.getX() * cellHeight + cellHeight - 3;
-            g.drawString(a.getId(), px, py);
-        }
-    }
-
-    private void drawRechargeLabel(Graphics2D g, java.util.List<int[]> stations) {
-        g.setColor(Color.WHITE);
-        int idx = 1;
-        for (int[] pos : stations) {
-            int px = pos[1] * cellWidth  + 2;
-            int py = pos[0] * cellHeight + cellHeight - 3;
-            g.drawString("C" + idx, px, py);
-            idx++;
-        }
+    /** Draw a white label in the top-left of the area cell. */
+    private void drawAreaLabel(Graphics2D g, int row, int col, String label, Color color) {
+        g.setColor(color);
+        int px = col * cellWidth  + 2;
+        int py = row * cellHeight + g.getFontMetrics().getAscent() + 1;
+        // Small shadow for readability
+        g.setColor(new Color(0, 0, 0, 140));
+        g.drawString(label, px + 1, py + 1);
+        g.setColor(color);
+        g.drawString(label, px, py);
     }
 
     /**
@@ -565,16 +584,16 @@ public class WarehouseGraphicalWindow extends JFrame {
         g.setColor(new Color(30, 30, 30));
         g.fillRect(0, legendY, panelW, LEGEND_HEIGHT);
 
-        // Items: [icon key or color swatch, label]
+        // Items: [icon-cache key, label]  — all entries now use cached icons
         Object[][] items = {
             {"robot_empty",    "AMR (idle)"},
             {"robot_carrying", "AMR (pallet)"},
             {"human",          "Human"},
             {"obstacle",       "Obstacle"},
-            {COLOR_ENTRY_BG,   "Entry (A1-A3)"},
-            {COLOR_EXIT_BG,    "Exit (Z1-Z2)"},
-            {COLOR_INTER_BG,   "Intermediate"},
-            {COLOR_RECHARGE_BG,"Recharge"},
+            {"entry",          "Entry (A1-A3)"},
+            {"exit",           "Exit (Z1-Z2)"},
+            {"intermediate",   "Intermediate"},
+            {"recharge",       "Recharge"},
         };
 
         int iconSize = 20;
@@ -585,25 +604,23 @@ public class WarehouseGraphicalWindow extends JFrame {
         FontMetrics fm = g.getFontMetrics();
 
         for (Object[] item : items) {
-            if (x + iconSize + fm.stringWidth((String) item[1]) + spacing * 2 > panelW) {
+            String label = (String) item[1];
+            if (x + iconSize + fm.stringWidth(label) + spacing * 2 > panelW) {
                 x = 6;
                 y += iconSize + 4;
             }
-            if (item[0] instanceof String) {
-                BufferedImage icon = iconCache.get((String) item[0]);
-                if (icon != null) {
-                    g.drawImage(icon, x, y, iconSize, iconSize, null);
-                }
+            // Draw icon from cache
+            BufferedImage icon = iconCache.get((String) item[0]);
+            if (icon != null) {
+                g.drawImage(icon, x, y, iconSize, iconSize, null);
             } else {
-                // Colour swatch
-                g.setColor((Color) item[0]);
-                g.fillRect(x, y, iconSize, iconSize);
+                // Fallback swatch (should not happen)
                 g.setColor(Color.GRAY);
-                g.drawRect(x, y, iconSize, iconSize);
+                g.fillRect(x, y, iconSize, iconSize);
             }
             g.setColor(Color.WHITE);
-            g.drawString((String) item[1], x + iconSize + 2, y + fm.getAscent() + (iconSize - fm.getHeight()) / 2);
-            x += iconSize + fm.stringWidth((String) item[1]) + spacing + 10;
+            g.drawString(label, x + iconSize + 2, y + fm.getAscent() + (iconSize - fm.getHeight()) / 2);
+            x += iconSize + fm.stringWidth(label) + spacing + 10;
         }
     }
     
