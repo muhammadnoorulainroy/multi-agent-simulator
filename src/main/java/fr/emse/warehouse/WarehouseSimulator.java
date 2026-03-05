@@ -177,32 +177,34 @@ public class WarehouseSimulator extends ColorSimFactory {
             warehouse.addEntryArea(entry);
         }
         
-        // ===== INTERMEDIATE AREAS - CENTER of grid =====
-        // Two relay stations for pallet handoff
-        IntermediateArea i1 = new IntermediateArea("I1", 
-            new int[]{3, sp.columns / 2}, 5);      // Upper-middle
-        IntermediateArea i2 = new IntermediateArea("I2", 
-            new int[]{sp.rows - 4, sp.columns / 2}, 5);  // Lower-middle
-        warehouse.addIntermediateArea(i1);
-        warehouse.addIntermediateArea(i2);
-        
-        // ===== CHARGING STATIONS — 3 strategic positions =====
-        //
-        // Strategy rationale:
-        //   C1 (near Z1, top-left)    — robots recharge immediately after delivering to Z1
-        //   C2 (near Z2, bottom-left) — robots recharge immediately after delivering to Z2
-        //   C3 (center warehouse)     — emergency mid-route station; closest when battery
-        //                               runs low before the robot reaches the left side
-        //
-        // Battery prediction (enforced in AMRobot.canCompleteTask):
-        //   required = (dist_to_pickup + dist_to_delivery + dist_to_nearest_recharge) × 1.2
-        //   If battery < required → go to C3 first (center), then accept the task
-        // C1: one row BELOW Z1 so it doesn't block the row-2 approach corridor to Z1
-        warehouse.addRechargeStation(new int[]{4,             2});               // C1 near Z1
-        // C2: one row ABOVE Z2 so it doesn't block the bottom approach corridor to Z2
-        warehouse.addRechargeStation(new int[]{sp.rows - 5,   2});               // C2 near Z2
-        // C3: center — emergency mid-route station
-        warehouse.addRechargeStation(new int[]{sp.rows / 2,   sp.columns / 2}); // C3 center
+        // ===== INTERMEDIATE AREAS & CHARGING STATIONS — Enhanced Model ONLY =====
+        // These features do not exist in the Reference Model:
+        //   - Intermediate areas are relay stations used by reusable AMRs
+        //   - Charging stations are only needed when battery management is active
+        if (mode == SimulationMode.ENHANCED) {
+            // --- Intermediate Areas - CENTER of grid ---
+            IntermediateArea i1 = new IntermediateArea("I1",
+                new int[]{3, sp.columns / 2}, 5);             // Upper-middle
+            IntermediateArea i2 = new IntermediateArea("I2",
+                new int[]{sp.rows - 4, sp.columns / 2}, 5);  // Lower-middle
+            warehouse.addIntermediateArea(i1);
+            warehouse.addIntermediateArea(i2);
+
+            // --- Charging Stations — 3 strategic positions ---
+            //
+            // Strategy rationale:
+            //   C1 (near Z1, top-left)    — robots recharge immediately after delivering to Z1
+            //   C2 (near Z2, bottom-left) — robots recharge immediately after delivering to Z2
+            //   C3 (center warehouse)     — emergency mid-route station; closest when battery
+            //                               runs low before the robot reaches the left side
+            //
+            // Battery prediction (enforced in AMRobot.canCompleteTask):
+            //   required = (dist_to_pickup + dist_to_delivery + dist_to_nearest_recharge) × 1.2
+            //   If battery < required → go to C3 first (center), then accept the task
+            warehouse.addRechargeStation(new int[]{4,             2});               // C1 near Z1
+            warehouse.addRechargeStation(new int[]{sp.rows - 5,   2});               // C2 near Z2
+            warehouse.addRechargeStation(new int[]{sp.rows / 2,   sp.columns / 2}); // C3 center
+        }
     }
     
     @Override
