@@ -228,6 +228,30 @@ public class WarehouseEnvironment {
     }
     
     /**
+     * Check if a position is an intermediate area.
+     */
+    public boolean isIntermediateArea(int[] position) {
+        for (IntermediateArea area : intermediateAreas) {
+            if (area.getX() == position[0] && area.getY() == position[1]) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Check if a position is a recharge station.
+     */
+    public boolean isRechargeStation(int[] position) {
+        for (int[] station : rechargeStations) {
+            if (station[0] == position[0] && station[1] == position[1]) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
      * Check if a position is blocked by an obstacle.
      * Entry and exit areas are NOT considered obstacles for pathfinding.
      */
@@ -331,10 +355,10 @@ public class WarehouseEnvironment {
     
     /**
      * Check if all pallets have been delivered.
+     * Note: when totalPallets is 0 (no pallets configured), treat as complete.
      */
     public boolean allPalletsDelivered() {
-        return pendingPallets.isEmpty() && 
-               allPallets.size() > 0 && 
+        return pendingPallets.isEmpty() &&
                deliveredPallets.size() == allPallets.size();
     }
     
@@ -386,11 +410,21 @@ public class WarehouseEnvironment {
     }
     
     public List<int[]> getRechargeStations() {
-        return new ArrayList<>(rechargeStations);
+        // Deep copy: callers must not be able to mutate internal position arrays
+        List<int[]> copies = new ArrayList<>(rechargeStations.size());
+        for (int[] station : rechargeStations) {
+            copies.add(station.clone());
+        }
+        return copies;
     }
     
     public List<int[]> getObstacles() {
-        return new ArrayList<>(obstacles);
+        // Deep copy: callers must not be able to mutate internal position arrays
+        List<int[]> copies = new ArrayList<>(obstacles.size());
+        for (int[] obstacle : obstacles) {
+            copies.add(obstacle.clone());
+        }
+        return copies;
     }
     
     public List<Pallet> getAllPallets() {

@@ -197,8 +197,11 @@ public class WarehouseSimulator extends ColorSimFactory {
         for (int i = 0; i < this.sp.nbobstacle; i++) {
             int[] pos = this.environment.getPlace();
             
-            // Make sure obstacle is not on entry/exit areas
-            while (warehouse.isEntryArea(pos) || warehouse.isExitArea(pos)) {
+            // Make sure obstacle is not on any reserved area (entry, exit, intermediate, recharge)
+            while (warehouse.isEntryArea(pos)
+                    || warehouse.isExitArea(pos)
+                    || warehouse.isIntermediateArea(pos)
+                    || warehouse.isRechargeStation(pos)) {
                 pos = this.environment.getPlace();
             }
             
@@ -453,13 +456,20 @@ public class WarehouseSimulator extends ColorSimFactory {
      * Generate new pallets at entry areas.
      */
     private void generatePallets(int tick) {
-        if (palletsGenerated >= totalPalletsToGenerate) {
-            return;  // Already generated all pallets
-        }
-        
+        // Always advance the warehouse tick so internal timing (e.g., delivery timestamps
+        // via currentTick in WarehouseEnvironment) stays accurate even after the pallet
+        // generation cap is reached. Stopping tick() would leave deliveries timestamped
+        // with a stale tick and produce incorrect delivery-time statistics.
         List<Pallet> newPallets = warehouse.tick(tick);
-        
+
+        if (palletsGenerated >= totalPalletsToGenerate) {
+            return;  // Cap reached — do not enqueue any more pallets
+        }
+
         for (Pallet pallet : newPallets) {
+            if (palletsGenerated >= totalPalletsToGenerate) {
+                break;  // Respect the total pallet cap mid-batch
+            }
             palletsGenerated++;
             
             if (this.sp.debug == 1) {
@@ -504,23 +514,43 @@ public class WarehouseSimulator extends ColorSimFactory {
     
     /**
      * Assign tasks to available AMRs (Enhanced Model).
+     * Each entry gets at most one AMR assignment per tick to avoid redundant work
+     * and congestion caused by multiple AMRs racing toward the same pallet.
      */
     private void assignTasks(int tick) {
         if (mode != SimulationMode.ENHANCED) {
             return;  // Reference model assigns immediately in createAMRForPallet
         }
-        
+
+        // Build a set of entry positions already targeted by a busy AMR so we
+        // don't dispatch a second robot to the same spot this tick.
+        java.util.Set<String> claimedEntries = new java.util.HashSet<>();
+        for (AMRobot amr : amrList) {
+            if (!amr.isAvailable()) {
+                int[] target = amr.getTargetPosition();
+                if (target != null) {
+                    claimedEntries.add(target[0] + "," + target[1]);
+                }
+            }
+        }
+
         // Get entry areas with waiting pallets
         List<EntryArea> entriesWithPallets = warehouse.getEntriesWithPallets();
         
         for (EntryArea entry : entriesWithPallets) {
+            String key = entry.getPosition()[0] + "," + entry.getPosition()[1];
+            if (claimedEntries.contains(key)) {
+                continue;  // An AMR is already heading here — skip to avoid duplicates
+            }
+
             // Find an available AMR
             AMRobot availableAMR = findBestAvailableAMR(entry.getPosition());
             
             if (availableAMR != null) {
-                // Assign pickup task
+                // Assign pickup task and mark entry as claimed for this tick
                 availableAMR.assignPickupTask(entry.getPosition(), 
                     entry.peekPallet().getDestination());
+                claimedEntries.add(key);
                 
                 if (this.sp.debug == 1) {
                     System.out.println(availableAMR.getName() + " assigned to " + entry.getId());

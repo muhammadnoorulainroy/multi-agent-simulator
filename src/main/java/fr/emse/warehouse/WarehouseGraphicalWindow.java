@@ -60,7 +60,9 @@ public class WarehouseGraphicalWindow extends JFrame {
         setTitle(title);
         setSize(width + 20, height + 45);
         setLocation(x, y);
-        setDefaultCloseOperation(JFrame.EXIT_ON_CLOSE);
+        // DISPOSE_ON_CLOSE: closing this icon window does not kill the entire application
+        // (EXIT_ON_CLOSE would terminate the JVM, closing the main simulation window too)
+        setDefaultCloseOperation(JFrame.DISPOSE_ON_CLOSE);
         
         // Create display panel with custom painting
         displayPanel = new JPanel() {
