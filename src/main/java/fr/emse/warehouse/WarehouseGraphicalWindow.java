@@ -31,15 +31,15 @@ public class WarehouseGraphicalWindow extends JFrame {
     private int cellHeight;
     private JPanel displayPanel;
     
-    // Component identification based on color
-    private static final int[] COLOR_ROBOT_BLUE = {0, 0, 255};      // Standard robot
-    private static final int[] COLOR_ROBOT_MAGENTA = {255, 0, 255}; // Robot with pallet
-    private static final int[] COLOR_HUMAN = {255, 200, 0};         // Human worker
-    private static final int[] COLOR_OBSTACLE = {80, 80, 80};       // Static obstacle
-    private static final int[] COLOR_ENTRY = {50, 200, 50};         // Entry area
-    private static final int[] COLOR_EXIT = {180, 50, 50};          // Exit area
-    private static final int[] COLOR_INTERMEDIATE = {100, 150, 255}; // Intermediate
-    private static final int[] COLOR_RECHARGE = {200, 100, 255};    // Recharge
+    // Component identification based on color — must match values in configuration.ini and AMRobot
+    private static final int[] COLOR_ROBOT_BLUE    = {0, 150, 255};  // Idle robot (matches config robot=0,150,255)
+    private static final int[] COLOR_ROBOT_MAGENTA = {255, 0, 255};  // Robot carrying pallet
+    private static final int[] COLOR_HUMAN         = {255, 200, 0};  // Human worker
+    private static final int[] COLOR_OBSTACLE      = {80, 80, 80};   // Static obstacle
+    private static final int[] COLOR_ENTRY         = {50, 200, 50};  // Entry area
+    private static final int[] COLOR_EXIT          = {180, 50, 50};  // Exit area
+    private static final int[] COLOR_INTERMEDIATE  = {100, 150, 255}; // Intermediate
+    private static final int[] COLOR_RECHARGE      = {200, 100, 255}; // Recharge
     
     // Cache for generated icons
     private Map<String, BufferedImage> iconCache = new HashMap<>();
@@ -443,42 +443,47 @@ public class WarehouseGraphicalWindow extends JFrame {
     private String identifyComponent(int[] color) {
         if (color == null) return null;
         
-        // Robot (blue)
+        // Check robots FIRST (before area checks) to avoid misclassifying robot colors as areas
+
+        // Robot idle (blue ~0,150,255)
         if (isColorMatch(color, COLOR_ROBOT_BLUE, 50)) {
             return "robot_empty";
         }
-        // Robot carrying pallet (magenta)
+        // Robot carrying pallet (magenta ~255,0,255)
         if (isColorMatch(color, COLOR_ROBOT_MAGENTA, 50)) {
             return "robot_carrying";
         }
-        // Human (yellow/orange)
-        if (isColorMatch(color, COLOR_HUMAN, 50) || 
+        // Human worker (yellow/orange ~255,200,0)
+        if (isColorMatch(color, COLOR_HUMAN, 50) ||
             (color[0] > 200 && color[1] > 150 && color[2] < 100)) {
             return "human";
         }
-        // Entry area (green)
+
+        // Area checks — only after ruling out all robot states
+
+        // Entry area (green ~50,200,50)
         if (isColorMatch(color, COLOR_ENTRY, 50) ||
             (color[0] < 100 && color[1] > 150 && color[2] < 100)) {
             return "entry";
         }
-        // Exit area (red/brown)
-        if (isColorMatch(color, COLOR_EXIT, 50) ||
-            (color[0] > 150 && color[1] < 100 && color[2] < 100)) {
+        // Exit area (dark red ~180,50,50) — exclude pure-red robot colors (r>220, g<60, b<60)
+        if (isColorMatch(color, COLOR_EXIT, 40) ||
+            (color[0] > 150 && color[0] <= 210 && color[1] < 80 && color[2] < 80)) {
             return "exit";
         }
-        // Intermediate area (light blue)
+        // Intermediate area (light blue ~100,150,255)
         if (isColorMatch(color, COLOR_INTERMEDIATE, 50)) {
             return "intermediate";
         }
-        // Recharge station (purple)
+        // Recharge station (purple ~200,100,255)
         if (isColorMatch(color, COLOR_RECHARGE, 50) ||
             (color[0] > 150 && color[1] < 150 && color[2] > 200)) {
             return "recharge";
         }
-        // Obstacle (dark gray)
+        // Obstacle (dark gray ~80,80,80)
         if (isColorMatch(color, COLOR_OBSTACLE, 30) ||
-            (color[0] < 100 && color[1] < 100 && color[2] < 100 && 
-             color[0] == color[1] && color[1] == color[2])) {
+            (color[0] < 120 && color[1] < 120 && color[2] < 120 &&
+             Math.abs(color[0] - color[1]) < 20 && Math.abs(color[1] - color[2]) < 20)) {
             return "obstacle";
         }
         

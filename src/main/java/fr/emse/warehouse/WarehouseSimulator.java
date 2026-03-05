@@ -254,8 +254,6 @@ public class WarehouseSimulator extends ColorSimFactory {
      * Humans are shown in YELLOW/ORANGE to distinguish from robots (BLUE).
      */
     private void createHumans() {
-        java.util.Random rand = new java.util.Random();
-        
         for (int i = 0; i < numHumans; i++) {
             // Find a free position for the human
             int[] pos = this.environment.getPlace();
@@ -617,9 +615,14 @@ public class WarehouseSimulator extends ColorSimFactory {
      */
     private void distributeMessages() {
         for (AMRobot sender : amrList) {
+            // Collect all outgoing messages ONCE per sender (popSentMessages clears the outbox)
+            List<Message> outgoing = sender.popSentMessages();
+            if (outgoing.isEmpty()) continue;
+
+            // Fan out to all other AMRs
             for (AMRobot receiver : amrList) {
                 if (sender.getId() != receiver.getId()) {
-                    for (Message msg : sender.popSentMessages()) {
+                    for (Message msg : outgoing) {
                         receiver.receiveMessage(msg);
                     }
                 }
@@ -1001,8 +1004,9 @@ public class WarehouseSimulator extends ColorSimFactory {
     }
     
     public static void main(String[] args) throws Exception {
-        // Load configuration
-        IniFile ifile = new IniFile("configuration.ini");
+        // Load configuration — allow override via -Dwarehouse.config=path/to/file.ini
+        String configFile = System.getProperty("warehouse.config", "warehouse_config.ini");
+        IniFile ifile = new IniFile(configFile);
         SimProperties sp = new SimProperties(ifile);
         sp.simulationParams();
         sp.displayParams();
@@ -1019,14 +1023,26 @@ public class WarehouseSimulator extends ColorSimFactory {
         // Create and run simulator
         WarehouseSimulator simulator = new WarehouseSimulator(sp, mode);
         
-        // Configure simulation
-        simulator.setTotalPallets(20);
-        simulator.setPalletArrivalProbability(0.2);
+        // Read simulation parameters from [warehouse] section of config file
+        // Defaults are used as fallback in case values are missing
+        int totalPallets = 20;
+        double arrivalProbability = 0.2;
+        int numAMRs = 5;
+        int maxBattery = 100;
+        int rechargeRate = 5;
+        try { totalPallets       = ifile.getIntValue("warehouse", "total_pallets"); }         catch (Exception e) { /* use default */ }
+        try { arrivalProbability = ifile.getDoubleValue("warehouse", "arrival_probability"); } catch (Exception e) { /* use default */ }
+        try { numAMRs            = ifile.getIntValue("warehouse", "num_amrs"); }              catch (Exception e) { /* use default */ }
+        try { maxBattery         = ifile.getIntValue("warehouse", "max_battery"); }           catch (Exception e) { /* use default */ }
+        try { rechargeRate       = ifile.getIntValue("warehouse", "recharge_rate"); }         catch (Exception e) { /* use default */ }
+
+        simulator.setTotalPallets(totalPallets);
+        simulator.setPalletArrivalProbability(arrivalProbability);
         
         if (mode == SimulationMode.ENHANCED) {
-            simulator.setNumAMRs(5);
-            simulator.setMaxBattery(100);
-            simulator.setRechargeRate(5);
+            simulator.setNumAMRs(numAMRs);
+            simulator.setMaxBattery(maxBattery);
+            simulator.setRechargeRate(rechargeRate);
         }
         
         // Initialize
