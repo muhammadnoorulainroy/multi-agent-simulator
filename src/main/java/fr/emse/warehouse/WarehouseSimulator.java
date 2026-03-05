@@ -11,7 +11,6 @@ import fr.emse.fayol.maqit.simulator.components.ComponentType;
 import fr.emse.fayol.maqit.simulator.environment.ColorGridEnvironment;
 import fr.emse.fayol.maqit.simulator.environment.ColorSimpleCell;
 
-import java.awt.Color;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Iterator;
@@ -187,8 +186,20 @@ public class WarehouseSimulator extends ColorSimFactory {
         warehouse.addIntermediateArea(i1);
         warehouse.addIntermediateArea(i2);
         
-        // ===== CHARGING STATION - LEFT-CENTER =====
-        warehouse.addRechargeStation(new int[]{sp.rows / 2, 3});
+        // ===== CHARGING STATIONS — 3 strategic positions =====
+        //
+        // Strategy rationale:
+        //   C1 (near Z1, top-left)    — robots recharge immediately after delivering to Z1
+        //   C2 (near Z2, bottom-left) — robots recharge immediately after delivering to Z2
+        //   C3 (center warehouse)     — emergency mid-route station; closest when battery
+        //                               runs low before the robot reaches the left side
+        //
+        // Battery prediction (enforced in AMRobot.canCompleteTask):
+        //   required = (dist_to_pickup + dist_to_delivery + dist_to_nearest_recharge) × 1.2
+        //   If battery < required → go to C3 first (center), then accept the task
+        warehouse.addRechargeStation(new int[]{2,             3});               // C1 near Z1
+        warehouse.addRechargeStation(new int[]{sp.rows - 3,   3});               // C2 near Z2
+        warehouse.addRechargeStation(new int[]{sp.rows / 2,   sp.columns / 2}); // C3 center
     }
     
     @Override
@@ -245,9 +256,9 @@ public class WarehouseSimulator extends ColorSimFactory {
     
     @Override
     public void createGoal() {
-        // Add visual markers for warehouse areas
-        createAreaMarkers();
-        
+        // Area icons are now rendered directly by WarehouseGraphicalWindow from
+        // WarehouseEnvironment — no ColorObstacle markers needed on the grid.
+
         // Create human workers (dynamic obstacles)
         createHumans();
     }
@@ -289,65 +300,9 @@ public class WarehouseSimulator extends ColorSimFactory {
      * - Humans: YELLOW/ORANGE
      * - AMRs: BLUE (empty) / MAGENTA (carrying)
      */
-    private void createAreaMarkers() {
-        // ===== EXIT AREAS (Z1, Z2) - DARK RED (like hatched ovals in reference) =====
-        // Create 2x2 markers to make them more visible
-        Color exitColor = new Color(180, 50, 50);  // Dark red
-        for (ExitArea exit : warehouse.getExitAreas()) {
-            int[] pos = exit.getPosition();
-            // Create a 2x2 block for better visibility
-            createMarkerBlock(pos, exitColor, 2, 2);
-        }
-        
-        // ===== ENTRY AREAS (A1, A2, A3) - BRIGHT GREEN =====
-        // Create larger markers with different shape
-        Color entryColor = new Color(50, 200, 50);  // Green
-        for (EntryArea entry : warehouse.getEntryAreas()) {
-            int[] pos = entry.getPosition();
-            // Create a vertical 3x1 block (like entry gates)
-            createMarkerBlock(pos, entryColor, 1, 3);
-        }
-        
-        // ===== INTERMEDIATE AREAS - BLUE (like blue rectangles in reference) =====
-        Color intermediateColor = new Color(100, 150, 255);  // Light blue
-        for (IntermediateArea intermediate : warehouse.getIntermediateAreas()) {
-            int[] pos = intermediate.getPosition();
-            // Create a 2x2 block
-            createMarkerBlock(pos, intermediateColor, 2, 2);
-        }
-        
-        // ===== RECHARGE STATIONS - PURPLE =====
-        Color rechargeColor = new Color(200, 100, 255);  // Purple
-        for (int[] pos : warehouse.getRechargeStations()) {
-            createMarkerBlock(pos, rechargeColor, 1, 1);
-        }
-    }
-    
-    /**
-     * Create a block of colored markers for better visibility.
-     * 
-     * @param startPos Starting position [row, column]
-     * @param color    Color of the marker
-     * @param width    Width in cells (columns)
-     * @param height   Height in cells (rows)
-     */
-    private void createMarkerBlock(int[] startPos, Color color, int width, int height) {
-        int[] rgb = {color.getRed(), color.getGreen(), color.getBlue()};
-        
-        for (int dr = 0; dr < height; dr++) {
-            for (int dc = 0; dc < width; dc++) {
-                int row = startPos[0] + dr;
-                int col = startPos[1] + dc;
-                
-                // Check bounds
-                if (row >= 0 && row < sp.rows && col >= 0 && col < sp.columns) {
-                    int[] pos = {row, col};
-                    ColorObstacle marker = new ColorObstacle(pos, rgb);
-                    addNewComponent(marker);
-                }
-            }
-        }
-    }
+    // createAreaMarkers() and createMarkerBlock() removed:
+    // Area visuals are now rendered as a background layer directly from WarehouseEnvironment
+    // by WarehouseGraphicalWindow — no ColorObstacle markers are placed on the grid.
     
     /**
      * Print the warehouse layout showing positions of all areas.
@@ -430,9 +385,8 @@ public class WarehouseSimulator extends ColorSimFactory {
                 printStatus(tick);
             }
             
-            // 8. Refresh display
-            refreshGW();
-            refreshCustomWindow();  // Also refresh custom icon window
+            // 8. Refresh display (icon window only — default color window removed)
+            refreshCustomWindow();
             
             // 9. Check if simulation is complete
             if (isSimulationComplete()) {
@@ -939,20 +893,20 @@ public class WarehouseSimulator extends ColorSimFactory {
     // ==================== Custom Window Methods ====================
     
     /**
-     * Initialize the custom graphical window with icon-based rendering.
-     * Positioned next to the default color window for comparison.
+     * Initialize the icon-based graphical window.
+     * This is now the ONLY display window — the default color window is removed.
+     * The window reads area positions directly from WarehouseEnvironment so icons
+     * are always in the correct fixed positions regardless of robot movements.
      */
     public void initializeCustomWindow() {
-        // Position the icon window to the right of the color window
-        int iconWindowX = this.sp.display_x + this.sp.display_width + 20;
-        
         customWindow = new WarehouseGraphicalWindow(
             this.environment.getGrid(),
-            iconWindowX,
+            warehouse,                       // Pass environment for direct area rendering
+            this.sp.display_x,
             this.sp.display_y,
             this.sp.display_width,
             this.sp.display_height,
-            "Warehouse AMR Simulation (Icon View)"
+            "Warehouse AMR Simulation"
         );
         customWindow.init();
     }
@@ -1080,9 +1034,7 @@ public class WarehouseSimulator extends ColorSimFactory {
         simulator.createObstacle();
         simulator.createRobot();
         simulator.createGoal();
-        simulator.initializeGW();         // Default color window
-        simulator.initializeCustomWindow(); // Custom icon window
-        simulator.refreshGW();
+        simulator.initializeCustomWindow(); // Icon window (only window — default color window removed)
         simulator.refreshCustomWindow();
         
         // Run simulation

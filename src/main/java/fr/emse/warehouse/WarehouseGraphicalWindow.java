@@ -25,58 +25,67 @@ import java.util.Map;
 public class WarehouseGraphicalWindow extends JFrame {
     
     private ColorSimpleCell[][] grid;
+    private WarehouseEnvironment warehouseEnv;  // Source of truth for fixed area positions
     private int width;
     private int height;
     private int cellWidth;
     private int cellHeight;
     private JPanel displayPanel;
-    
-    // Component identification based on color — must match values in configuration.ini and AMRobot
-    private static final int[] COLOR_ROBOT_BLUE    = {0, 150, 255};  // Idle robot (matches config robot=0,150,255)
+
+    // Legend height strip at bottom
+    private static final int LEGEND_HEIGHT = 60;
+
+    // Colors for the background area layer (drawn directly from env, no color guessing)
+    private static final Color COLOR_FLOOR       = new Color(245, 245, 240); // Warm off-white floor
+    private static final Color COLOR_ENTRY_BG    = new Color(50,  200, 50);  // Bright green
+    private static final Color COLOR_EXIT_BG     = new Color(180, 50,  50);  // Dark red
+    private static final Color COLOR_INTER_BG    = new Color(100, 150, 220); // Steel blue
+    private static final Color COLOR_RECHARGE_BG = new Color(180, 100, 220); // Purple
+
+    // Moving-agent identification — only robots/humans/obstacles need color matching now
+    private static final int[] COLOR_ROBOT_BLUE    = {0, 150, 255};  // Idle robot
     private static final int[] COLOR_ROBOT_MAGENTA = {255, 0, 255};  // Robot carrying pallet
     private static final int[] COLOR_HUMAN         = {255, 200, 0};  // Human worker
     private static final int[] COLOR_OBSTACLE      = {80, 80, 80};   // Static obstacle
-    private static final int[] COLOR_ENTRY         = {50, 200, 50};  // Entry area
-    private static final int[] COLOR_EXIT          = {180, 50, 50};  // Exit area
-    private static final int[] COLOR_INTERMEDIATE  = {100, 150, 255}; // Intermediate
-    private static final int[] COLOR_RECHARGE      = {200, 100, 255}; // Recharge
-    
+
     // Cache for generated icons
     private Map<String, BufferedImage> iconCache = new HashMap<>();
-    
-    public WarehouseGraphicalWindow(ColorSimpleCell[][] grid, int x, int y, 
-                                     int width, int height, String title) {
+
+    public WarehouseGraphicalWindow(ColorSimpleCell[][] grid, WarehouseEnvironment env,
+                                     int x, int y, int width, int height, String title) {
         this.grid = grid;
+        this.warehouseEnv = env;
         this.width = width;
         this.height = height;
-        
-        // Calculate cell dimensions
+
+        // Calculate cell dimensions (reserve bottom strip for legend)
         int rows = grid.length;
         int cols = grid[0].length;
-        this.cellWidth = width / cols;
-        this.cellHeight = height / rows;
-        
+        this.cellWidth  = width / cols;
+        this.cellHeight = (height - LEGEND_HEIGHT) / rows;
+
         // Setup window
         setTitle(title);
-        setSize(width + 20, height + 45);
+        setSize(width + 20, height + LEGEND_HEIGHT + 45);
         setLocation(x, y);
         // DISPOSE_ON_CLOSE: closing this icon window does not kill the entire application
-        // (EXIT_ON_CLOSE would terminate the JVM, closing the main simulation window too)
         setDefaultCloseOperation(JFrame.DISPOSE_ON_CLOSE);
-        
-        // Create display panel with custom painting
+
+        // Create display panel with two-layer custom painting
         displayPanel = new JPanel() {
             @Override
             protected void paintComponent(Graphics g) {
                 super.paintComponent(g);
-                renderWarehouse((Graphics2D) g);
+                Graphics2D g2 = (Graphics2D) g;
+                renderWarehouse(g2);
+                renderLegend(g2);
             }
         };
-        displayPanel.setPreferredSize(new Dimension(width, height));
-        displayPanel.setBackground(new Color(240, 240, 240));
-        
+        displayPanel.setPreferredSize(new Dimension(width, height + LEGEND_HEIGHT));
+        displayPanel.setBackground(COLOR_FLOOR);
+
         add(displayPanel);
-        
+
         // Pre-generate icons
         generateIcons();
     }
@@ -391,105 +400,226 @@ public class WarehouseGraphicalWindow extends JFrame {
     }
     
     /**
-     * Render the entire warehouse grid.
+     * Two-layer renderer:
+     *   Layer 1 — Floor + fixed areas (from WarehouseEnvironment — never moves, never flickers)
+     *   Layer 2 — Moving agents (robots, humans, obstacles) from the live grid
      */
     private void renderWarehouse(Graphics2D g) {
         g.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
-        
+
         int rows = grid.length;
         int cols = grid[0].length;
-        
-        // Draw grid lines first (light gray)
-        g.setColor(new Color(220, 220, 220));
+
+        // ── LAYER 1: floor tiles ────────────────────────────────────────────
+        for (int r = 0; r < rows; r++) {
+            for (int c = 0; c < cols; c++) {
+                g.setColor(COLOR_FLOOR);
+                g.fillRect(c * cellWidth, r * cellHeight, cellWidth, cellHeight);
+            }
+        }
+
+        // ── LAYER 1b: fixed area backgrounds (from WarehouseEnvironment) ───
+        if (warehouseEnv != null) {
+            // Entry areas — green
+            for (EntryArea entry : warehouseEnv.getEntryAreas()) {
+                drawAreaBackground(g, entry.getX(), entry.getY(), COLOR_ENTRY_BG, 2, 1);
+            }
+            // Exit areas — dark red (2×2 to mimic hatched ovals)
+            for (ExitArea exit : warehouseEnv.getExitAreas()) {
+                drawAreaBackground(g, exit.getX(), exit.getY(), COLOR_EXIT_BG, 2, 2);
+            }
+            // Intermediate areas — steel blue (2×2)
+            for (IntermediateArea inter : warehouseEnv.getIntermediateAreas()) {
+                drawAreaBackground(g, inter.getX(), inter.getY(), COLOR_INTER_BG, 2, 2);
+            }
+            // Recharge stations — purple (1×1)
+            for (int[] pos : warehouseEnv.getRechargeStations()) {
+                drawAreaBackground(g, pos[0], pos[1], COLOR_RECHARGE_BG, 1, 1);
+            }
+
+            // Area labels (A1/A2/A3, Z1/Z2, I1/I2, C1/C2/C3)
+            g.setFont(new Font("SansSerif", Font.BOLD, Math.max(8, Math.min(cellHeight / 2, 13))));
+            drawAreaLabel(g, warehouseEnv.getEntryAreas());
+            drawExitLabel(g, warehouseEnv.getExitAreas());
+            drawInterLabel(g, warehouseEnv.getIntermediateAreas());
+            drawRechargeLabel(g, warehouseEnv.getRechargeStations());
+        }
+
+        // ── LAYER 2: grid lines ─────────────────────────────────────────────
+        g.setColor(new Color(200, 200, 200));
         for (int r = 0; r <= rows; r++) {
             g.drawLine(0, r * cellHeight, cols * cellWidth, r * cellHeight);
         }
         for (int c = 0; c <= cols; c++) {
             g.drawLine(c * cellWidth, 0, c * cellWidth, rows * cellHeight);
         }
-        
-        // Draw each cell
+
+        // ── LAYER 3: moving agents from live grid ────────────────────────────
         for (int r = 0; r < rows; r++) {
             for (int c = 0; c < cols; c++) {
                 ColorSimpleCell cell = grid[r][c];
-                int x = c * cellWidth;
-                int y = r * cellHeight;
-                
-                if (cell != null) {
-                    ColorSituatedComponent content = cell.getContent();
-                    
-                    if (content != null) {
-                        int[] color = content.getColor();
-                        String iconKey = identifyComponent(color);
-                        
-                        if (iconKey != null && iconCache.containsKey(iconKey)) {
-                            // Draw icon
-                            BufferedImage icon = iconCache.get(iconKey);
-                            int iconX = x + (cellWidth - icon.getWidth()) / 2;
-                            int iconY = y + (cellHeight - icon.getHeight()) / 2;
+                int px = c * cellWidth;
+                int py = r * cellHeight;
+
+                if (cell == null) continue;
+                ColorSituatedComponent content = cell.getContent();
+                if (content == null) continue;
+
+                int[] color = content.getColor();
+                String iconKey = identifyAgent(color);
+
+                if (iconKey != null && iconCache.containsKey(iconKey)) {
+                    BufferedImage icon = iconCache.get(iconKey);
+                    int iconX = px + (cellWidth  - icon.getWidth())  / 2;
+                    int iconY = py + (cellHeight - icon.getHeight()) / 2;
+                    g.drawImage(icon, iconX, iconY, null);
+                }
+                // Note: area marker ColorObstacles are no longer placed on the grid,
+                // so any unknown color here is a real obstacle
+                else if (color != null) {
+                    if (isColorMatch(color, COLOR_OBSTACLE, 40)) {
+                        BufferedImage icon = iconCache.get("obstacle");
+                        if (icon != null) {
+                            int iconX = px + (cellWidth  - icon.getWidth())  / 2;
+                            int iconY = py + (cellHeight - icon.getHeight()) / 2;
                             g.drawImage(icon, iconX, iconY, null);
-                        } else {
-                            // Fallback to color fill
-                            g.setColor(new Color(color[0], color[1], color[2]));
-                            g.fillRect(x + 1, y + 1, cellWidth - 2, cellHeight - 2);
                         }
                     }
                 }
             }
         }
     }
+
+    /** Draw a solid coloured background block spanning widthCells × heightCells. */
+    private void drawAreaBackground(Graphics2D g, int row, int col, Color bg,
+                                     int heightCells, int widthCells) {
+        int rows = grid.length;
+        int cols = grid[0].length;
+        for (int dr = 0; dr < heightCells; dr++) {
+            for (int dc = 0; dc < widthCells; dc++) {
+                int r = row + dr;
+                int c = col + dc;
+                if (r < 0 || r >= rows || c < 0 || c >= cols) continue;
+                int px = c * cellWidth;
+                int py = r * cellHeight;
+                g.setColor(bg);
+                g.fillRect(px + 1, py + 1, cellWidth - 2, cellHeight - 2);
+                // Hatch pattern for visual richness
+                g.setColor(bg.darker());
+                g.setStroke(new BasicStroke(1));
+                for (int d = 0; d < cellWidth + cellHeight; d += 7) {
+                    g.drawLine(px + d, py, px, py + d);
+                    g.drawLine(px + d, py + cellHeight, px + cellWidth, py + cellHeight - d);
+                }
+            }
+        }
+    }
+
+    private void drawAreaLabel(Graphics2D g, java.util.List<EntryArea> areas) {
+        g.setColor(Color.WHITE);
+        for (EntryArea a : areas) {
+            int px = a.getY() * cellWidth  + 2;
+            int py = a.getX() * cellHeight + cellHeight - 3;
+            g.drawString(a.getId(), px, py);
+        }
+    }
+
+    private void drawExitLabel(Graphics2D g, java.util.List<ExitArea> areas) {
+        g.setColor(Color.WHITE);
+        for (ExitArea a : areas) {
+            int px = a.getY() * cellWidth  + 2;
+            int py = a.getX() * cellHeight + cellHeight - 3;
+            g.drawString(a.getId(), px, py);
+        }
+    }
+
+    private void drawInterLabel(Graphics2D g, java.util.List<IntermediateArea> areas) {
+        g.setColor(Color.WHITE);
+        for (IntermediateArea a : areas) {
+            int px = a.getY() * cellWidth  + 2;
+            int py = a.getX() * cellHeight + cellHeight - 3;
+            g.drawString(a.getId(), px, py);
+        }
+    }
+
+    private void drawRechargeLabel(Graphics2D g, java.util.List<int[]> stations) {
+        g.setColor(Color.WHITE);
+        int idx = 1;
+        for (int[] pos : stations) {
+            int px = pos[1] * cellWidth  + 2;
+            int py = pos[0] * cellHeight + cellHeight - 3;
+            g.drawString("C" + idx, px, py);
+            idx++;
+        }
+    }
+
+    /**
+     * Draw a legend strip below the grid explaining every icon.
+     */
+    private void renderLegend(Graphics2D g) {
+        int rows = grid.length;
+        int legendY = rows * cellHeight;
+        int panelW  = grid[0].length * cellWidth;
+
+        // Background
+        g.setColor(new Color(30, 30, 30));
+        g.fillRect(0, legendY, panelW, LEGEND_HEIGHT);
+
+        // Items: [icon key or color swatch, label]
+        Object[][] items = {
+            {"robot_empty",    "AMR (idle)"},
+            {"robot_carrying", "AMR (pallet)"},
+            {"human",          "Human"},
+            {"obstacle",       "Obstacle"},
+            {COLOR_ENTRY_BG,   "Entry (A1-A3)"},
+            {COLOR_EXIT_BG,    "Exit (Z1-Z2)"},
+            {COLOR_INTER_BG,   "Intermediate"},
+            {COLOR_RECHARGE_BG,"Recharge"},
+        };
+
+        int iconSize = 20;
+        int spacing  = 6;
+        int x = 6;
+        int y = legendY + 8;
+        g.setFont(new Font("SansSerif", Font.PLAIN, 10));
+        FontMetrics fm = g.getFontMetrics();
+
+        for (Object[] item : items) {
+            if (x + iconSize + fm.stringWidth((String) item[1]) + spacing * 2 > panelW) {
+                x = 6;
+                y += iconSize + 4;
+            }
+            if (item[0] instanceof String) {
+                BufferedImage icon = iconCache.get((String) item[0]);
+                if (icon != null) {
+                    g.drawImage(icon, x, y, iconSize, iconSize, null);
+                }
+            } else {
+                // Colour swatch
+                g.setColor((Color) item[0]);
+                g.fillRect(x, y, iconSize, iconSize);
+                g.setColor(Color.GRAY);
+                g.drawRect(x, y, iconSize, iconSize);
+            }
+            g.setColor(Color.WHITE);
+            g.drawString((String) item[1], x + iconSize + 2, y + fm.getAscent() + (iconSize - fm.getHeight()) / 2);
+            x += iconSize + fm.stringWidth((String) item[1]) + spacing + 10;
+        }
+    }
     
     /**
-     * Identify component type based on its color.
+     * Identify only moving agents (robots / humans) by color.
+     * Areas are no longer detected here — they are drawn directly from WarehouseEnvironment.
      */
-    private String identifyComponent(int[] color) {
+    private String identifyAgent(int[] color) {
         if (color == null) return null;
-        
-        // Check robots FIRST (before area checks) to avoid misclassifying robot colors as areas
 
-        // Robot idle (blue ~0,150,255)
-        if (isColorMatch(color, COLOR_ROBOT_BLUE, 50)) {
-            return "robot_empty";
-        }
-        // Robot carrying pallet (magenta ~255,0,255)
-        if (isColorMatch(color, COLOR_ROBOT_MAGENTA, 50)) {
-            return "robot_carrying";
-        }
-        // Human worker (yellow/orange ~255,200,0)
+        if (isColorMatch(color, COLOR_ROBOT_BLUE, 50))    return "robot_empty";
+        if (isColorMatch(color, COLOR_ROBOT_MAGENTA, 50)) return "robot_carrying";
         if (isColorMatch(color, COLOR_HUMAN, 50) ||
-            (color[0] > 200 && color[1] > 150 && color[2] < 100)) {
-            return "human";
-        }
+            (color[0] > 200 && color[1] > 150 && color[2] < 100)) return "human";
 
-        // Area checks — only after ruling out all robot states
-
-        // Entry area (green ~50,200,50)
-        if (isColorMatch(color, COLOR_ENTRY, 50) ||
-            (color[0] < 100 && color[1] > 150 && color[2] < 100)) {
-            return "entry";
-        }
-        // Exit area (dark red ~180,50,50) — exclude pure-red robot colors (r>220, g<60, b<60)
-        if (isColorMatch(color, COLOR_EXIT, 40) ||
-            (color[0] > 150 && color[0] <= 210 && color[1] < 80 && color[2] < 80)) {
-            return "exit";
-        }
-        // Intermediate area (light blue ~100,150,255)
-        if (isColorMatch(color, COLOR_INTERMEDIATE, 50)) {
-            return "intermediate";
-        }
-        // Recharge station (purple ~200,100,255)
-        if (isColorMatch(color, COLOR_RECHARGE, 50) ||
-            (color[0] > 150 && color[1] < 150 && color[2] > 200)) {
-            return "recharge";
-        }
-        // Obstacle (dark gray ~80,80,80)
-        if (isColorMatch(color, COLOR_OBSTACLE, 30) ||
-            (color[0] < 120 && color[1] < 120 && color[2] < 120 &&
-             Math.abs(color[0] - color[1]) < 20 && Math.abs(color[1] - color[2]) < 20)) {
-            return "obstacle";
-        }
-        
-        return null;  // Unknown - will use color fallback
+        return null;
     }
     
     /**
@@ -526,10 +656,17 @@ public class WarehouseGraphicalWindow extends JFrame {
     }
     
     /**
-     * Update the grid reference.
+     * Update the grid reference (called every tick).
      */
     public void setGrid(ColorSimpleCell[][] newGrid) {
         this.grid = newGrid;
+    }
+
+    /**
+     * Update the warehouse environment reference (optional, set once after construction).
+     */
+    public void setWarehouseEnvironment(WarehouseEnvironment env) {
+        this.warehouseEnv = env;
     }
 }
 
