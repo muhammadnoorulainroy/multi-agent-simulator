@@ -1,5 +1,7 @@
-.gradle
+# Build output
+.gradle/
 build/
+bin/
 
 # Temp folders (decompiled classes for exploration)
 temp_decompile/
@@ -12,6 +14,8 @@ temp/
 .idea/
 *.iml
 .vscode/
+
+# Compiled Java classes
 *.class
 
 # OS files
