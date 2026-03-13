@@ -59,7 +59,7 @@ public class WarehouseSimulator extends ColorSimFactory {
     private WarehouseGraphicalWindow customWindow;  // Custom icon-based window
     
     // ==================== Visual Configuration ====================
-    private int numHumans = 2;  // Number of human workers in warehouse (less clutter)
+    private int numHumans = 2;  // Default; overridden from warehouse_config.ini [warehouse] num_humans
     
     // ==================== Configuration ====================
     private int totalPalletsToGenerate;
@@ -75,7 +75,7 @@ public class WarehouseSimulator extends ColorSimFactory {
     private int simulationTicks;
     private long startTime;
     private long endTime;
-    
+
     /**
      * Creates a warehouse simulator.
      */
@@ -116,6 +116,10 @@ public class WarehouseSimulator extends ColorSimFactory {
     
     public void setNumAMRs(int num) {
         this.numAMRs = num;
+    }
+
+    public void setNumHumans(int num) {
+        this.numHumans = num;
     }
     
     // ==================== Environment Setup ====================
@@ -190,20 +194,14 @@ public class WarehouseSimulator extends ColorSimFactory {
             warehouse.addIntermediateArea(i1);
             warehouse.addIntermediateArea(i2);
 
-            // --- Charging Stations — 3 strategic positions ---
+            // --- Charging Stations — 2 strategic positions ---
             //
-            // Strategy rationale:
-            //   C1 (near Z1, top-left)    — robots recharge immediately after delivering to Z1
-            //   C2 (near Z2, bottom-left) — robots recharge immediately after delivering to Z2
-            //   C3 (center warehouse)     — emergency mid-route station; closest when battery
-            //                               runs low before the robot reaches the left side
-            //
-            // Battery prediction (enforced in AMRobot.canCompleteTask):
-            //   required = (dist_to_pickup + dist_to_delivery + dist_to_nearest_recharge) × 1.2
-            //   If battery < required → go to C3 first (center), then accept the task
-            warehouse.addRechargeStation(new int[]{4,             2});               // C1 near Z1
-            warehouse.addRechargeStation(new int[]{sp.rows - 5,   2});               // C2 near Z2
-            warehouse.addRechargeStation(new int[]{sp.rows / 2,   sp.columns / 2}); // C3 center
+            // With max 2 AMRs charging simultaneously, 2 stations is sufficient.
+            // Strategy: one on each side so AMRs always have a nearby station.
+            //   C1 (center-left, near exits)   — recharge after delivery to Z1/Z2
+            //   C2 (center-right, near entries) — recharge near pickup areas A1-A3
+            warehouse.addRechargeStation(new int[]{sp.rows / 2,   3});                // C1 center-left
+            warehouse.addRechargeStation(new int[]{sp.rows / 2,   sp.columns - 4});  // C2 center-right
         }
     }
     
@@ -343,8 +341,10 @@ public class WarehouseSimulator extends ColorSimFactory {
             
             humanList.add(human);
             addNewComponent(human);
+            // Register initial human position for AMR collision detection
+            warehouse.updateHumanPosition(human.getName(), pos);
         }
-        
+
         System.out.println("Created " + numHumans + " human workers (dynamic obstacles)");
     }
     
@@ -435,36 +435,37 @@ public class WarehouseSimulator extends ColorSimFactory {
             
             // 1. Generate new pallets at entry areas
             generatePallets(tick);
-            
+
             // 2. Assign tasks to available AMRs
             assignTasks(tick);
-            
+
             // 3. Move all AMRs
             moveAMRs(tick);
-            
-            // 3b. Move humans (dynamic obstacles)
+
+            // 4. Move humans (dynamic obstacles)
             moveHumans();
-            
-            // 4. Handle message distribution (enhanced mode)
+
+            // 5. Handle message distribution (enhanced mode)
             if (mode == SimulationMode.ENHANCED) {
                 distributeMessages();
             }
-            
-            // 5. Check for completed deliveries
+
+            // 6. Check for completed deliveries
             checkDeliveries(tick);
-            
-            // 6. Remove completed AMRs (reference model)
-            removeCompletedAMRs();
-            
+
             // 7. Print status
             if (this.sp.debug == 1) {
                 printStatus(tick);
             }
-            
-            // 8. Refresh display (icon window only — default color window removed)
+
+            // 8. Refresh GUI BEFORE removing AMRs so the user sees the robot
+            //    at the exit area for one frame before it vanishes
             refreshCustomWindow();
-            
-            // 9. Check if simulation is complete
+
+            // 9. Remove completed AMRs (reference model — vanish after being shown at exit)
+            removeCompletedAMRs();
+
+            // 10. Check if simulation is complete
             if (isSimulationComplete()) {
                 System.out.println("\nSimulation complete at tick " + tick);
                 break;
@@ -480,6 +481,12 @@ public class WarehouseSimulator extends ColorSimFactory {
         
         endTime = System.currentTimeMillis();
         printFinalStatistics();
+
+        // Close GUI and exit cleanly once all work is done
+        if (customWindow != null) {
+            customWindow.dispose();
+        }
+        System.exit(0);
     }
     
     /**
@@ -549,17 +556,58 @@ public class WarehouseSimulator extends ColorSimFactory {
     }
     
     /**
-     * Assign tasks to available AMRs (Enhanced Model).
-     * Each entry gets at most one AMR assignment per tick to avoid redundant work
-     * and congestion caused by multiple AMRs racing toward the same pallet.
+     * Assign tasks to available AMRs.
+     *
+     * ENHANCED MODEL — Contract Net Protocol:
+     *   1. For each entry area with waiting pallets, broadcast a task announcement
+     *   2. Each idle AMR computes a bid score (distance, battery, availability)
+     *   3. Highest scoring AMR wins the task
+     *   4. If winner can't do full delivery, assign relay to intermediate area
+     *
+     * Also handles:
+     *   - Intermediate area pickups (relay completion)
+     *   - Recharge queue management (max 2 charging simultaneously)
      */
     private void assignTasks(int tick) {
         if (mode != SimulationMode.ENHANCED) {
             return;  // Reference model assigns immediately in createAMRForPallet
         }
 
-        // Build a set of entry positions already targeted by a busy AMR so we
-        // don't dispatch a second robot to the same spot this tick.
+        // --- Phase 1: Intermediate area pickups (relay completion) ---
+        // Pallets sitting in intermediate areas need to be picked up and delivered to exits
+        for (IntermediateArea area : warehouse.getIntermediateAreas()) {
+            if (!area.hasPallets()) continue;
+
+            Pallet waitingPallet = area.peekPallet();
+            int[] exitPos = warehouse.getExitPosition(waitingPallet.getDestination());
+            if (exitPos == null) continue;
+
+            // Contract Net: collect bids from idle AMRs for this relay task
+            AMRobot bestBidder = null;
+            double bestScore = -1;
+
+            for (AMRobot amr : amrList) {
+                double score = amr.computeBidScore(area.getPosition(), exitPos);
+                if (score > bestScore) {
+                    bestScore = score;
+                    bestBidder = amr;
+                }
+            }
+
+            if (bestBidder != null && bestBidder.canCompleteFullDelivery(area.getPosition(), exitPos)) {
+                // Award relay pickup task — pallet stays in area until AMR physically arrives
+                bestBidder.assignPickupTask(area.getPosition(), waitingPallet.getDestination());
+
+                if (this.sp.debug == 1) {
+                    System.out.println("[CONTRACT NET] " + bestBidder.getName() +
+                        " won relay bid for pallet #" + waitingPallet.getId() +
+                        " from " + area.getId() + " (score: " + String.format("%.3f", bestScore) + ")");
+                }
+            }
+        }
+
+        // --- Phase 2: Entry area pickups (Contract Net bidding) ---
+        // Build set of already-claimed entry positions
         java.util.Set<String> claimedEntries = new java.util.HashSet<>();
         for (AMRobot amr : amrList) {
             if (!amr.isAvailable()) {
@@ -570,53 +618,71 @@ public class WarehouseSimulator extends ColorSimFactory {
             }
         }
 
-        // Get entry areas with waiting pallets
         List<EntryArea> entriesWithPallets = warehouse.getEntriesWithPallets();
-        
+
         for (EntryArea entry : entriesWithPallets) {
             String key = entry.getPosition()[0] + "," + entry.getPosition()[1];
-            if (claimedEntries.contains(key)) {
-                continue;  // An AMR is already heading here — skip to avoid duplicates
+            if (claimedEntries.contains(key)) continue;
+
+            Pallet nextPallet = entry.peekPallet();
+            if (nextPallet == null) continue;
+
+            int[] exitPos = warehouse.getExitPosition(nextPallet.getDestination());
+            if (exitPos == null) continue;
+
+            // Contract Net: collect bids from all idle AMRs
+            AMRobot bestBidder = null;
+            double bestScore = -1;
+
+            for (AMRobot amr : amrList) {
+                double score = amr.computeBidScore(entry.getPosition(), exitPos);
+                if (score > bestScore) {
+                    bestScore = score;
+                    bestBidder = amr;
+                }
             }
 
-            // Find an available AMR
-            AMRobot availableAMR = findBestAvailableAMR(entry.getPosition());
-            
-            if (availableAMR != null) {
-                // Assign pickup task and mark entry as claimed for this tick
-                availableAMR.assignPickupTask(entry.getPosition(), 
-                    entry.peekPallet().getDestination());
+            if (bestBidder != null) {
+                bestBidder.assignPickupTask(entry.getPosition(), nextPallet.getDestination());
                 claimedEntries.add(key);
-                
+
                 if (this.sp.debug == 1) {
-                    System.out.println(availableAMR.getName() + " assigned to " + entry.getId());
+                    boolean fullDelivery = bestBidder.canCompleteFullDelivery(entry.getPosition(), exitPos);
+                    System.out.println("[CONTRACT NET] " + bestBidder.getName() +
+                        " won bid for " + entry.getId() + " pallet #" + nextPallet.getId() +
+                        " → " + nextPallet.getDestination() +
+                        " (score: " + String.format("%.3f", bestScore) +
+                        ", mode: " + (fullDelivery ? "FULL" : "RELAY") + ")");
                 }
             }
         }
-        
-        // Check for AMRs that need to recharge
+
+        // --- Phase 3: Recharge management (AFTER task assignment) ---
+        // Only idle AMRs that didn't win any bid get sent to recharge.
+        // This ensures no robot sits idle when it could handle a task.
         for (AMRobot amr : amrList) {
             if (amr.isIdle() && amr.shouldRecharge()) {
-                int[] rechargePos = warehouse.getNearestRechargeStation(amr.getLocation());
-                if (rechargePos != null) {
-                    amr.assignRechargeTask(rechargePos);
+                if (warehouse.isRechargeSlotAvailable()) {
+                    int[] rechargePos = warehouse.getNearestRechargeStation(amr.getLocation());
+                    if (rechargePos != null) {
+                        amr.assignRechargeTask(rechargePos);
+                        if (this.sp.debug == 1) {
+                            System.out.println(amr.getName() + " heading to recharge (battery: " +
+                                (int) amr.getBatteryPercentage() + "%)");
+                        }
+                    }
                 }
             }
         }
     }
-    
-    /**
-     * Find the best available AMR for a task at given position.
-     * Uses simple distance-based selection (can be enhanced with auction).
-     */
+
+    /** Kept for compatibility but no longer used — bidding is via computeBidScore. */
     private AMRobot findBestAvailableAMR(int[] taskPosition) {
         AMRobot best = null;
         int bestDistance = Integer.MAX_VALUE;
-        
         for (AMRobot amr : amrList) {
             if (amr.isAvailable()) {
                 int distance = warehouse.manhattanDistance(amr.getLocation(), taskPosition);
-                
                 if (distance < bestDistance) {
                     bestDistance = distance;
                     best = amr;
@@ -629,29 +695,35 @@ public class WarehouseSimulator extends ColorSimFactory {
     
     /**
      * Move all AMRs one step.
+     *
+     * The grid position is determined by searching for the component on the grid
+     * (not from getLocation()) because escape moves inside move() can call
+     * setLocation() multiple times, causing the logical position to diverge
+     * from the actual grid cell.
      */
     private void moveAMRs(int tick) {
-        // Move robots one at a time, updating environment after each move
-        // This ensures subsequent robots see accurate positions
+        ColorSimpleCell[][] grid = this.environment.getGrid();
+
         for (AMRobot amr : amrList) {
-            int[] oldPos = amr.getLocation().clone();
-            
-            // Get FRESH perception before moving (includes updates from previous robots)
+            // Find actual grid position (ground truth)
+            int[] gridPos = findComponentOnGrid(amr, grid);
+
+            // Get FRESH perception before moving
             ColorSimpleCell[][] per = this.environment.getNeighbor(
                 amr.getX(), amr.getY(), amr.getField());
             amr.updatePerception(per);
-            
-            // Move
+
+            // Move (may call setLocation one or more times internally)
             amr.move(1);
-            
-            // Update environment IMMEDIATELY if moved
+
+            // Sync grid with AMR's new logical position
             int[] newPos = amr.getLocation();
-            if (oldPos[0] != newPos[0] || oldPos[1] != newPos[1]) {
-                // Use moveComponent to update the grid properly
-                this.environment.moveComponent(oldPos[0], oldPos[1], newPos[0], newPos[1]);
-                // Update robot position tracker for collision detection
-                warehouse.updateRobotPosition(amr.getId(), newPos);
+            if (gridPos != null &&
+                (gridPos[0] != newPos[0] || gridPos[1] != newPos[1])) {
+                this.environment.moveComponent(gridPos[0], gridPos[1], newPos[0], newPos[1]);
             }
+            // Update position tracker for collision detection
+            warehouse.updateRobotPosition(amr.getId(), newPos);
         }
     }
     
@@ -660,24 +732,29 @@ public class WarehouseSimulator extends ColorSimFactory {
      * Humans move randomly and act as moving obstacles for AMRs.
      */
     private void moveHumans() {
+        ColorSimpleCell[][] grid = this.environment.getGrid();
+
         for (Human human : humanList) {
-            int[] oldPos = human.getPosition();
-            
+            // Find actual grid position (ground truth)
+            int[] gridPos = findComponentOnGrid(human, grid);
+
             // Update perception
             ColorSimpleCell[][] per = this.environment.getNeighbor(
                 human.getX(), human.getY(), human.getField()
             );
             human.updatePerception(per);
-            
+
             // Move the human
             human.move(1);
-            
-            // Update environment if position changed
+
+            // Sync grid with human's new logical position
             int[] newPos = human.getPosition();
-            if (oldPos[0] != newPos[0] || oldPos[1] != newPos[1]) {
-                // Use the correct moveComponent API: (oldX, oldY, newX, newY)
-                this.environment.moveComponent(oldPos[0], oldPos[1], newPos[0], newPos[1]);
+            if (gridPos != null &&
+                (gridPos[0] != newPos[0] || gridPos[1] != newPos[1])) {
+                this.environment.moveComponent(gridPos[0], gridPos[1], newPos[0], newPos[1]);
             }
+            // Update human position tracker so AMRs can detect humans
+            warehouse.updateHumanPosition(human.getName(), newPos);
         }
     }
     
@@ -708,7 +785,8 @@ public class WarehouseSimulator extends ColorSimFactory {
     
     /**
      * Check for AMRs that have completed deliveries.
-     * Robots must reach the EXIT AREA to deliver, then vanish immediately.
+     * Delivery is only valid when the AMR is physically inside an exit area cell.
+     * After delivery the AMR vanishes immediately (reference model).
      */
     private void checkDeliveries(int tick) {
         for (AMRobot amr : amrList) {
@@ -718,26 +796,150 @@ public class WarehouseSimulator extends ColorSimFactory {
                 continue;
             }
 
-            // Check if AMR is DELIVERING and has reached the exit area
-            if (amr.getState() == AMRobot.State.DELIVERING && amr.getCarriedPallet() != null) {
-                // Check if robot is inside the 2x2 exit area
-                if (warehouse.isExitArea(amr.getLocation())) {
-                    // Robot reached exit - deliver and mark for removal
+            // Delivery check: AMR must be at an exit area cell
+            if (amr.getState() == AMRobot.State.DELIVERING || amr.getState() == AMRobot.State.DELIVERED) {
+                if (amr.getCarriedPallet() != null && warehouse.isExitArea(amr.getLocation())) {
                     handleDelivery(amr, tick);
                 }
             }
-            
-            // Also handle if already marked DELIVERED by path completion
-            else if (amr.getState() == AMRobot.State.DELIVERED) {
-                handleDelivery(amr, tick);
+
+            // Enhanced: intermediate area drop-off
+            if (mode == SimulationMode.ENHANCED &&
+                amr.getState() == AMRobot.State.MOVING_TO_INTERMEDIATE) {
+                if (amr.getCarriedPallet() != null && warehouse.isIntermediateArea(amr.getLocation())) {
+                    handleIntermediateDrop(amr, tick);
+                }
+            }
+
+            // Enhanced: recharge queue management
+            if (mode == SimulationMode.ENHANCED && amr.getState() == AMRobot.State.RECHARGING) {
+                // Register in recharge queue if not already
+                warehouse.tryStartCharging(amr.getId());
+            }
+            // When AMR finishes recharging (transitions to IDLE), free the slot
+            if (mode == SimulationMode.ENHANCED && amr.getState() == AMRobot.State.IDLE) {
+                warehouse.stopCharging(amr.getId());
+            }
+
+            // Enhanced: if battery getting low while active, go recharge
+            // Carrying pallet: recharge WITH pallet (keeps it, resumes delivery after)
+            // Moving to pickup: abort and go recharge (will re-bid after charge)
+            if (mode == SimulationMode.ENHANCED && amr.shouldRecharge() &&
+                (amr.getState() == AMRobot.State.DELIVERING ||
+                 amr.getState() == AMRobot.State.MOVING_TO_PICKUP)) {
+                int[] rechargePos = warehouse.getNearestRechargeStation(amr.getLocation());
+                if (rechargePos != null) {
+                    if (amr.isCarryingPallet()) {
+                        amr.assignRechargeTask(rechargePos);
+                        if (this.sp.debug == 1) {
+                            System.out.println("[RECHARGE-WITH-PALLET] " + amr.getName() +
+                                " going to recharge while carrying pallet #" + amr.getCarriedPallet().getId() +
+                                " (battery: " + (int) amr.getBatteryPercentage() + "%)");
+                        }
+                    } else {
+                        amr.assignRechargeTask(rechargePos);
+                        if (this.sp.debug == 1) {
+                            System.out.println("[RECHARGE-ABORT] " + amr.getName() +
+                                " aborting pickup to recharge (battery: " +
+                                (int) amr.getBatteryPercentage() + "%)");
+                        }
+                    }
+                }
+            }
+
+            // Enhanced: recover pallets from dead AMRs
+            if (mode == SimulationMode.ENHANCED && amr.isDead() && amr.isCarryingPallet()) {
+                handleDeadAMRRecovery(amr, tick);
+            }
+        }
+    }
+
+    /**
+     * Recover pallet from a dead AMR by dropping it at nearest intermediate area.
+     * If no intermediate area is available, the pallet is returned to the nearest entry area.
+     */
+    private void handleDeadAMRRecovery(AMRobot amr, int tick) {
+        Pallet pallet = amr.getCarriedPallet();
+        if (pallet == null) return;
+
+        // Try to drop at nearest intermediate area
+        IntermediateArea nearest = warehouse.getNearestIntermediateArea(amr.getLocation());
+        if (nearest != null && nearest.canAccept()) {
+            // Force-remove pallet from dead AMR
+            Pallet dropped = amr.dropPalletAtIntermediate();
+            if (dropped != null) {
+                nearest.storePallet(dropped);
+                if (this.sp.debug == 1) {
+                    System.out.println("[RECOVERY] Dead " + amr.getName() +
+                        " — pallet #" + dropped.getId() + " recovered to " + nearest.getId());
+                }
+            }
+        }
+        // If no intermediate area available, pallet is lost (counted in stats)
+    }
+
+    /**
+     * Handle pallet drop at intermediate area (relay delivery).
+     */
+    private void handleIntermediateDrop(AMRobot amr, int tick) {
+        IntermediateArea targetArea = null;
+        for (IntermediateArea area : warehouse.getIntermediateAreas()) {
+            int ax = area.getX(), ay = area.getY();
+            int rx = amr.getX(), ry = amr.getY();
+            if (rx >= ax && rx < ax + 2 && ry >= ay && ry < ay + 2) {
+                targetArea = area;
+                break;
+            }
+        }
+
+        if (targetArea != null && targetArea.canAccept()) {
+            Pallet dropped = amr.dropPalletAtIntermediate();
+            if (dropped != null) {
+                targetArea.storePallet(dropped);
+                if (this.sp.debug == 1) {
+                    System.out.println(amr.getName() + " dropped pallet #" + dropped.getId() +
+                        " at " + targetArea.getId() + " for relay (battery: " +
+                        (int) amr.getBatteryPercentage() + "%)");
+                }
+            }
+        }
+    }
+
+    /**
+     * Emergency pallet drop when battery is critically low while delivering.
+     * Drops at nearest intermediate area if adjacent, otherwise continues.
+     */
+    private void handleEmergencyDrop(AMRobot amr, int tick) {
+        // Only drop if we're actually at or adjacent to an intermediate area
+        for (IntermediateArea area : warehouse.getIntermediateAreas()) {
+            if (warehouse.manhattanDistance(amr.getLocation(), area.getPosition()) <= 2
+                && area.canAccept()) {
+                Pallet dropped = amr.dropPalletAtIntermediate();
+                if (dropped != null) {
+                    area.storePallet(dropped);
+                    if (this.sp.debug == 1) {
+                        System.out.println("[EMERGENCY] " + amr.getName() +
+                            " emergency-dropped pallet #" + dropped.getId() +
+                            " at " + area.getId() + " (battery: " +
+                            (int) amr.getBatteryPercentage() + "%)");
+                    }
+                    // Send AMR to recharge immediately
+                    int[] rechargePos = warehouse.getNearestRechargeStation(amr.getLocation());
+                    if (rechargePos != null) {
+                        amr.assignRechargeTask(rechargePos);
+                    }
+                }
+                return;
             }
         }
     }
     
     /**
      * Handle pallet pickup at entry area.
-     * Accepts pickup from the exact entry cell OR any adjacent cell (distance ≤ 1)
-     * so robots don't have to queue on the exact entry position.
+     * Accepts pickup from the exact entry cell OR any adjacent cell (distance ≤ 1).
+     *
+     * Enhanced model: If AMR doesn't have enough battery for full delivery,
+     * routes to the nearest intermediate area for relay instead.
      */
     private void handlePickup(AMRobot amr) {
         // Try exact position first
@@ -754,8 +956,48 @@ public class WarehouseSimulator extends ColorSimFactory {
             }
         }
 
+        // Enhanced: also try intermediate areas for relay pickups
+        // Check if AMR is within the 2x2 intermediate area block (not just manhattan distance)
+        if (pallet == null && mode == SimulationMode.ENHANCED) {
+            for (IntermediateArea area : warehouse.getIntermediateAreas()) {
+                int ax = area.getX(), ay = area.getY();
+                int rx = amr.getX(), ry = amr.getY();
+                boolean withinArea = (rx >= ax && rx < ax + 2 && ry >= ay && ry < ay + 2)
+                    || warehouse.manhattanDistance(amr.getLocation(), area.getPosition()) <= 1;
+                if (withinArea && area.hasPallets()) {
+                    pallet = area.pickupPallet();
+                    if (pallet != null) {
+                        if (this.sp.debug == 1) {
+                            System.out.println(amr.getName() + " picked up relay pallet #" +
+                                pallet.getId() + " from " + area.getId());
+                        }
+                        break;
+                    }
+                }
+            }
+        }
+
         if (pallet != null) {
-            int[] exitPos = warehouse.getExitPosition(pallet.getDestination());
+            // Use best free cell within the 2x2 exit block (spreads AMRs across all 4 cells)
+            int[] exitPos = (mode == SimulationMode.ENHANCED)
+                ? warehouse.getBestExitCell(pallet.getDestination(), amr.getLocation())
+                : warehouse.getExitPosition(pallet.getDestination());
+
+            if (mode == SimulationMode.ENHANCED && !amr.canCompleteFullDelivery(amr.getLocation(), exitPos)) {
+                // Not enough battery for full delivery — relay via intermediate area
+                IntermediateArea nearest = warehouse.getNearestIntermediateArea(amr.getLocation());
+                if (nearest != null && nearest.canAccept()) {
+                    amr.pickupPalletForRelay(pallet, nearest.getPosition());
+                    if (this.sp.debug == 1) {
+                        System.out.println(amr.getName() + " picked up " + pallet +
+                            " → RELAY via " + nearest.getId() + " (low battery: " +
+                            (int) amr.getBatteryPercentage() + "%)");
+                    }
+                    return;
+                }
+                // No intermediate available — try full delivery anyway
+            }
+
             amr.pickupPallet(pallet, exitPos);
 
             if (this.sp.debug == 1) {
@@ -773,19 +1015,42 @@ public class WarehouseSimulator extends ColorSimFactory {
      */
     private void handleDelivery(AMRobot amr, int tick) {
         Pallet delivered = amr.deliverPallet();
-        
+
         if (delivered != null) {
             int deliveryTime = warehouse.deliverPallet(delivered);
-            
+
+            // Identify which exit area the delivery happened at
+            String exitId = "?";
+            for (ExitArea exit : warehouse.getExitAreas()) {
+                int ex = exit.getX(), ey = exit.getY();
+                int ax = amr.getX(), ay = amr.getY();
+                if (ax >= ex && ax < ex + 2 && ay >= ey && ay < ey + 2) {
+                    exitId = exit.getId();
+                    break;
+                }
+            }
+
             if (this.sp.debug == 1) {
-                System.out.println(amr.getName() + " DELIVERED at exit " + 
-                    "(" + amr.getX() + "," + amr.getY() + ") - removing");
+                String suffix = (mode == SimulationMode.REFERENCE) ? " - vanishing" :
+                    " (battery: " + (int) amr.getBatteryPercentage() + "%)";
+                System.out.println(amr.getName() + " DELIVERED pallet #" + delivered.getId() +
+                    " at " + exitId + " (" + amr.getX() + "," + amr.getY() + ")" +
+                    " | delivery time: " + deliveryTime + " ticks" + suffix);
             }
         }
-        
-        // Reference model: ALWAYS mark AMR for immediate removal after delivery
+
         if (mode == SimulationMode.REFERENCE) {
+            // Reference model: remove AMR after delivery
             amrsToRemove.add(amr);
+        } else {
+            // Enhanced model: AMR returns to idle (handled by deliverPallet())
+            // If low battery, immediately head to recharge
+            if (amr.shouldRecharge() && warehouse.isRechargeSlotAvailable()) {
+                int[] rechargePos = warehouse.getNearestRechargeStation(amr.getLocation());
+                if (rechargePos != null) {
+                    amr.assignRechargeTask(rechargePos);
+                }
+            }
         }
     }
     
@@ -873,10 +1138,10 @@ public class WarehouseSimulator extends ColorSimFactory {
      */
     private boolean isSimulationComplete() {
         // Complete when all pallets are generated AND delivered
-        return palletsGenerated >= totalPalletsToGenerate && 
+        return palletsGenerated >= totalPalletsToGenerate &&
                warehouse.allPalletsDelivered();
     }
-    
+
     // ==================== Status and Statistics ====================
     
     private void printStatus(int tick) {
@@ -1021,33 +1286,117 @@ public class WarehouseSimulator extends ColorSimFactory {
     }
     
     private void printFinalStatistics() {
-        String separator = "==================================================";
-        System.out.println("\n" + separator);
-        System.out.println("       SIMULATION COMPLETE - " + mode + " MODEL");
-        System.out.println(separator);
-        
-        System.out.println(warehouse.getStatisticsSummary());
-        
-        System.out.println("\n--- Simulation Statistics ---");
-        System.out.println("Total Ticks: " + simulationTicks);
-        System.out.println("Runtime: " + (endTime - startTime) + " ms");
-        System.out.println("Total Pallets: " + warehouse.getTotalPalletCount());
-        System.out.println("Delivered Pallets: " + warehouse.getDeliveredPalletCount());
-        System.out.println("Total Delivery Time: " + warehouse.getTotalDeliveryTime());
-        System.out.println("Average Delivery Time: " + 
-            String.format("%.2f", warehouse.getAverageDeliveryTime()) + " ticks");
-        
+        String sep  = "============================================================";
+        String sep2 = "------------------------------------------------------------";
+        System.out.println("\n" + sep);
+        System.out.println("         SIMULATION RESULTS - " + mode + " MODEL");
+        System.out.println(sep);
+
+        // --- Core metrics (per project requirements) ---
+        int totalPallets     = warehouse.getTotalPalletCount();
+        int delivered        = warehouse.getDeliveredPalletCount();
+        int pending          = warehouse.getPendingPalletCount();
+        int totalDeliveryTd  = warehouse.getTotalDeliveryTime();   // td = sum of (tc - ts)
+        double avgDelivery   = warehouse.getAverageDeliveryTime();
+        int makespan         = simulationTicks;
+        double throughput    = makespan > 0 ? (double) delivered / makespan : 0;
+
+        System.out.println("\n  DELIVERY METRICS");
+        System.out.println(sep2);
+        System.out.println("  Total pallets generated     : " + totalPallets);
+        System.out.println("  Total pallets delivered      : " + delivered);
+        System.out.println("  Pallets still pending        : " + pending);
+        System.out.println("  Total delivery time (td)     : " + totalDeliveryTd +
+            " ticks   [td = sum of (tc - ts) for each pallet]");
+        System.out.println("  Average delivery time        : " +
+            String.format("%.2f", avgDelivery) + " ticks per pallet");
+        System.out.println("  Makespan                     : " + makespan + " ticks");
+        System.out.println("  Throughput                   : " +
+            String.format("%.4f", throughput) + " pallets/tick");
+
+        // --- Per-pallet delivery log ---
+        System.out.println("\n  PER-PALLET DELIVERY LOG");
+        System.out.println(sep2);
+        System.out.println("  Pallet | Dest | Arrived (ts) | Delivered (tc) | Time (tp = tc - ts)");
+        System.out.println("  -------+------+--------------+----------------+--------------------");
+        for (Pallet p : warehouse.getDeliveredPallets()) {
+            System.out.printf("  %-6d | %-4s | %-12d | %-14d | %d ticks%n",
+                p.getId(), p.getDestination(), p.getArrivalTick(),
+                p.getDeliveryTick(), p.getDeliveryTime());
+        }
+
+        // --- Per entry area ---
+        System.out.println("\n  ENTRY AREAS");
+        System.out.println(sep2);
+        for (EntryArea entry : warehouse.getEntryAreas()) {
+            System.out.println("  " + entry.getId() +
+                " (" + entry.getX() + "," + entry.getY() + ")" +
+                ": generated " + entry.getTotalPalletsGenerated() +
+                ", remaining " + entry.getQueueSize());
+        }
+
+        // --- Per exit area ---
+        System.out.println("\n  EXIT AREAS");
+        System.out.println(sep2);
+        for (ExitArea exit : warehouse.getExitAreas()) {
+            System.out.println("  " + exit.getId() +
+                " (" + exit.getX() + "," + exit.getY() + ")" +
+                ": " + exit.getDeliveredCount() + " delivered" +
+                ", avg time: " + String.format("%.2f", exit.getAverageDeliveryTime()) + " ticks");
+        }
+
+        // --- Enhanced Model: Per-AMR stats ---
         if (mode == SimulationMode.ENHANCED) {
-            System.out.println("\n--- AMR Statistics ---");
+            System.out.println("\n  AMR STATISTICS");
+            System.out.println(sep2);
+            System.out.println("  AMR     | Delivered | Distance | Util%  | Battery | Recharges | State");
+            System.out.println("  --------+-----------+----------+--------+---------+-----------+------");
+            int totalBatteryDeaths = 0;
             for (AMRobot amr : amrList) {
-                System.out.println(amr.getName() + 
-                    ": delivered=" + amr.getPalletsDelivered() +
-                    ", distance=" + amr.getTotalDistanceTraveled() +
-                    ", utilization=" + String.format("%.1f", amr.getUtilizationRate()) + "%");
+                if (amr.isDead()) totalBatteryDeaths++;
+                System.out.printf("  %-7s | %-9d | %-8d | %-5.1f%% | %-6d%% | %-9d | %s%n",
+                    amr.getName(),
+                    amr.getPalletsDelivered(),
+                    amr.getTotalDistanceTraveled(),
+                    amr.getUtilizationRate(),
+                    (int) amr.getBatteryPercentage(),
+                    amr.getRechargeCount(),
+                    amr.getState());
+            }
+            System.out.println("  Battery deaths: " + totalBatteryDeaths);
+
+            // Intermediate area usage
+            System.out.println("\n  INTERMEDIATE AREAS");
+            System.out.println(sep2);
+            for (IntermediateArea area : warehouse.getIntermediateAreas()) {
+                System.out.println("  " + area.getId() +
+                    " (" + area.getX() + "," + area.getY() + ")" +
+                    ": received=" + area.getTotalPalletsReceived() +
+                    ", picked up=" + area.getTotalPalletsPickedUp() +
+                    ", remaining=" + area.getCurrentCount() +
+                    "/" + area.getCapacity());
+            }
+
+            // Recharge stations
+            System.out.println("\n  RECHARGE STATIONS");
+            System.out.println(sep2);
+            System.out.println("  Max simultaneous charging: 2 | Currently charging: " + warehouse.getChargingCount());
+            for (int[] station : warehouse.getRechargeStations()) {
+                System.out.println("  Station at (" + station[0] + "," + station[1] + ")");
             }
         }
-        
-        System.out.println(separator);
+
+        // --- Environment summary ---
+        System.out.println("\n  ENVIRONMENT");
+        System.out.println(sep2);
+        System.out.println("  Grid size       : " + sp.rows + " x " + sp.columns);
+        System.out.println("  Fixed obstacles  : " + warehouse.getObstacles().size());
+        System.out.println("  Human workers    : " + numHumans);
+        System.out.println("  Arrival prob     : " + palletArrivalProbability +
+            " (split across " + warehouse.getEntryAreas().size() + " entries)");
+        System.out.println("  Simulation time  : " + (endTime - startTime) + " ms");
+
+        System.out.println("\n" + sep);
     }
     
     // ==================== Getters ====================
@@ -1184,19 +1533,27 @@ public class WarehouseSimulator extends ColorSimFactory {
         // Read simulation parameters from [warehouse] section of config file
         // Defaults are used as fallback in case values are missing
         int totalPallets = 20;
-        double arrivalProbability = 0.2;
+        double arrivalProbability = 0.15;
+        int numObstacles = sp.nbobstacle;
+        int numHumans = 2;
         int numAMRs = 5;
         int maxBattery = 100;
         int rechargeRate = 5;
         try { totalPallets       = ifile.getIntValue("warehouse", "total_pallets"); }         catch (Exception e) { /* use default */ }
         try { arrivalProbability = ifile.getDoubleValue("warehouse", "arrival_probability"); } catch (Exception e) { /* use default */ }
+        try { numObstacles       = ifile.getIntValue("warehouse", "num_obstacles"); }         catch (Exception e) { /* use default */ }
+        try { numHumans          = ifile.getIntValue("warehouse", "num_humans"); }            catch (Exception e) { /* use default */ }
         try { numAMRs            = ifile.getIntValue("warehouse", "num_amrs"); }              catch (Exception e) { /* use default */ }
         try { maxBattery         = ifile.getIntValue("warehouse", "max_battery"); }           catch (Exception e) { /* use default */ }
         try { rechargeRate       = ifile.getIntValue("warehouse", "recharge_rate"); }         catch (Exception e) { /* use default */ }
 
+        // Override framework obstacle count with warehouse-specific config
+        sp.nbobstacle = numObstacles;
+
         simulator.setTotalPallets(totalPallets);
         simulator.setPalletArrivalProbability(arrivalProbability);
-        
+        simulator.setNumHumans(numHumans);
+
         if (mode == SimulationMode.ENHANCED) {
             simulator.setNumAMRs(numAMRs);
             simulator.setMaxBattery(maxBattery);

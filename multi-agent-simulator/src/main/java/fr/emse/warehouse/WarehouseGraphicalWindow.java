@@ -634,6 +634,8 @@ public class WarehouseGraphicalWindow extends JFrame {
 
         if (isColorMatch(color, COLOR_ROBOT_BLUE, 50))    return "robot_empty";
         if (isColorMatch(color, COLOR_ROBOT_MAGENTA, 50)) return "robot_carrying";
+        // Low-battery robots are red (255, 50, 50) — show as idle robot icon
+        if (isColorMatch(color, new int[]{255, 50, 50}, 50)) return "robot_empty";
         if (isColorMatch(color, COLOR_HUMAN, 50) ||
             (color[0] > 200 && color[1] > 150 && color[2] < 100)) return "human";
 

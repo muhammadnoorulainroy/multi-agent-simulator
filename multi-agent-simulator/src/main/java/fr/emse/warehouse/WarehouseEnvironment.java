@@ -37,7 +37,14 @@ public class WarehouseEnvironment {
     
     // ==================== Robot Position Tracking ====================
     private final Map<Integer, int[]> robotPositions;  // Robot ID -> current position
+
+    // ==================== Human Position Tracking ====================
+    private final Map<String, int[]> humanPositions;   // Human name -> current position
     
+    // ==================== Recharge Queue (Enhanced Model) ====================
+    private static final int MAX_CHARGING_SIMULTANEOUSLY = 2;
+    private final java.util.Set<Integer> chargingRobotIds;  // Robot IDs currently charging
+
     // ==================== Statistics ====================
     private int totalDeliveryTime;
     private int currentTick;
@@ -65,6 +72,8 @@ public class WarehouseEnvironment {
         
         this.exitAreaMap = new HashMap<>();
         this.robotPositions = new HashMap<>();
+        this.humanPositions = new HashMap<>();
+        this.chargingRobotIds = new java.util.HashSet<>();
         
         this.totalDeliveryTime = 0;
         this.currentTick = 0;
@@ -139,6 +148,58 @@ public class WarehouseEnvironment {
         return false;
     }
     
+    // ==================== Human Position Tracking ====================
+
+    /**
+     * Update the position of a human worker.
+     */
+    public void updateHumanPosition(String humanName, int[] position) {
+        humanPositions.put(humanName, position.clone());
+    }
+
+    /**
+     * Check if a position is occupied by any human worker.
+     */
+    public boolean isOccupiedByHuman(int[] position) {
+        for (int[] humanPos : humanPositions.values()) {
+            if (humanPos[0] == position[0] && humanPos[1] == position[1]) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    // ==================== Recharge Queue (Enhanced Model) ====================
+
+    /**
+     * Try to start charging. Returns true if a slot is available.
+     */
+    public boolean tryStartCharging(int robotId) {
+        if (chargingRobotIds.size() < MAX_CHARGING_SIMULTANEOUSLY) {
+            chargingRobotIds.add(robotId);
+            return true;
+        }
+        return false;
+    }
+
+    /**
+     * Stop charging (robot is fully charged or leaving).
+     */
+    public void stopCharging(int robotId) {
+        chargingRobotIds.remove(robotId);
+    }
+
+    /**
+     * Check if a recharge slot is available.
+     */
+    public boolean isRechargeSlotAvailable() {
+        return chargingRobotIds.size() < MAX_CHARGING_SIMULTANEOUSLY;
+    }
+
+    public int getChargingCount() {
+        return chargingRobotIds.size();
+    }
+
     /**
      * Check if a position is occupied by any robot.
      */
@@ -255,6 +316,39 @@ public class WarehouseEnvironment {
     public int[] getExitPosition(String exitId) {
         ExitArea exitArea = exitAreaMap.get(exitId);
         return exitArea != null ? exitArea.getPosition() : null;
+    }
+
+    /**
+     * Get the best free cell within the 2x2 exit area block for a given AMR position.
+     * Picks the nearest cell not occupied by another robot. Falls back to anchor if all occupied.
+     */
+    public int[] getBestExitCell(String exitId, int[] amrPosition) {
+        ExitArea exitArea = exitAreaMap.get(exitId);
+        if (exitArea == null) return null;
+
+        int ex = exitArea.getX();
+        int ey = exitArea.getY();
+
+        int[] best = null;
+        int bestDist = Integer.MAX_VALUE;
+
+        for (int dr = 0; dr < 2; dr++) {
+            for (int dc = 0; dc < 2; dc++) {
+                int r = ex + dr;
+                int c = ey + dc;
+                if (r < 0 || r >= rows || c < 0 || c >= columns) continue;
+                int[] cell = new int[]{r, c};
+                if (!isOccupiedByAnyRobot(cell)) {
+                    int dist = manhattanDistance(amrPosition, cell);
+                    if (dist < bestDist) {
+                        bestDist = dist;
+                        best = cell;
+                    }
+                }
+            }
+        }
+
+        return best != null ? best : exitArea.getPosition();
     }
     
     /**
