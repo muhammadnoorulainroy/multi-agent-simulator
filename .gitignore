@@ -1,25 +1,14 @@
-# Build output
-.gradle/
-build/
-bin/
-out/
-
-# Temp folders (decompiled classes for exploration)
-temp_decompile/
-temp/
-
-# Extracted class files from JAR exploration (only at project root)
-/fr/
-
-# IDE files
+# IDE
+.vscode/
 .idea/
 *.iml
-.vscode/
 
-# Compiled Java classes
-*.class
+# Build
+build/
+.gradle/
+out/
 
-# OS files
+# OS
 .DS_Store
 Thumbs.db
 
