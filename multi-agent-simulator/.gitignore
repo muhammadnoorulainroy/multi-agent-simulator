@@ -2,7 +2,6 @@
 .gradle/
 build/
 bin/
-out/
 
 # Temp folders (decompiled classes for exploration)
 temp_decompile/
