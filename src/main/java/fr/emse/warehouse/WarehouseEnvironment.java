@@ -35,6 +35,16 @@ public class WarehouseEnvironment {
     // ==================== Exit Area Lookup ====================
     private final Map<String, ExitArea> exitAreaMap;  // ID -> ExitArea
     
+    // ==================== Robot Position Tracking ====================
+    private final Map<Integer, int[]> robotPositions;  // Robot ID -> current position
+
+    // ==================== Human Position Tracking ====================
+    private final Map<String, int[]> humanPositions;   // Human name -> current position
+    
+    // ==================== Recharge Queue (Enhanced Model) ====================
+    private static final int MAX_CHARGING_SIMULTANEOUSLY = 2;
+    private final java.util.Set<Integer> chargingRobotIds;  // Robot IDs currently charging
+
     // ==================== Statistics ====================
     private int totalDeliveryTime;
     private int currentTick;
@@ -61,6 +71,9 @@ public class WarehouseEnvironment {
         this.deliveredPallets = new ArrayList<>();
         
         this.exitAreaMap = new HashMap<>();
+        this.robotPositions = new HashMap<>();
+        this.humanPositions = new HashMap<>();
+        this.chargingRobotIds = new java.util.HashSet<>();
         
         this.totalDeliveryTime = 0;
         this.currentTick = 0;
@@ -102,6 +115,101 @@ public class WarehouseEnvironment {
      */
     public void addObstacle(int[] position) {
         obstacles.add(position.clone());
+    }
+    
+    // ==================== Robot Position Tracking ====================
+    
+    /**
+     * Update the position of a robot.
+     */
+    public void updateRobotPosition(int robotId, int[] position) {
+        robotPositions.put(robotId, position.clone());
+    }
+    
+    /**
+     * Remove a robot from tracking (when it's removed from simulation).
+     */
+    public void removeRobot(int robotId) {
+        robotPositions.remove(robotId);
+    }
+    
+    /**
+     * Check if a position is occupied by any robot (other than the specified one).
+     */
+    public boolean isOccupiedByRobot(int[] position, int excludeRobotId) {
+        for (Map.Entry<Integer, int[]> entry : robotPositions.entrySet()) {
+            if (entry.getKey() != excludeRobotId) {
+                int[] robotPos = entry.getValue();
+                if (robotPos[0] == position[0] && robotPos[1] == position[1]) {
+                    return true;  // Another robot is here
+                }
+            }
+        }
+        return false;
+    }
+    
+    // ==================== Human Position Tracking ====================
+
+    /**
+     * Update the position of a human worker.
+     */
+    public void updateHumanPosition(String humanName, int[] position) {
+        humanPositions.put(humanName, position.clone());
+    }
+
+    /**
+     * Check if a position is occupied by any human worker.
+     */
+    public boolean isOccupiedByHuman(int[] position) {
+        for (int[] humanPos : humanPositions.values()) {
+            if (humanPos[0] == position[0] && humanPos[1] == position[1]) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    // ==================== Recharge Queue (Enhanced Model) ====================
+
+    /**
+     * Try to start charging. Returns true if a slot is available.
+     */
+    public boolean tryStartCharging(int robotId) {
+        if (chargingRobotIds.size() < MAX_CHARGING_SIMULTANEOUSLY) {
+            chargingRobotIds.add(robotId);
+            return true;
+        }
+        return false;
+    }
+
+    /**
+     * Stop charging (robot is fully charged or leaving).
+     */
+    public void stopCharging(int robotId) {
+        chargingRobotIds.remove(robotId);
+    }
+
+    /**
+     * Check if a recharge slot is available.
+     */
+    public boolean isRechargeSlotAvailable() {
+        return chargingRobotIds.size() < MAX_CHARGING_SIMULTANEOUSLY;
+    }
+
+    public int getChargingCount() {
+        return chargingRobotIds.size();
+    }
+
+    /**
+     * Check if a position is occupied by any robot.
+     */
+    public boolean isOccupiedByAnyRobot(int[] position) {
+        for (int[] robotPos : robotPositions.values()) {
+            if (robotPos[0] == position[0] && robotPos[1] == position[1]) {
+                return true;
+            }
+        }
+        return false;
     }
     
     // ==================== Simulation Tick ====================
@@ -209,6 +317,39 @@ public class WarehouseEnvironment {
         ExitArea exitArea = exitAreaMap.get(exitId);
         return exitArea != null ? exitArea.getPosition() : null;
     }
+
+    /**
+     * Get the best free cell within the 2x2 exit area block for a given AMR position.
+     * Picks the nearest cell not occupied by another robot. Falls back to anchor if all occupied.
+     */
+    public int[] getBestExitCell(String exitId, int[] amrPosition) {
+        ExitArea exitArea = exitAreaMap.get(exitId);
+        if (exitArea == null) return null;
+
+        int ex = exitArea.getX();
+        int ey = exitArea.getY();
+
+        int[] best = null;
+        int bestDist = Integer.MAX_VALUE;
+
+        for (int dr = 0; dr < 2; dr++) {
+            for (int dc = 0; dc < 2; dc++) {
+                int r = ex + dr;
+                int c = ey + dc;
+                if (r < 0 || r >= rows || c < 0 || c >= columns) continue;
+                int[] cell = new int[]{r, c};
+                if (!isOccupiedByAnyRobot(cell)) {
+                    int dist = manhattanDistance(amrPosition, cell);
+                    if (dist < bestDist) {
+                        bestDist = dist;
+                        best = cell;
+                    }
+                }
+            }
+        }
+
+        return best != null ? best : exitArea.getPosition();
+    }
     
     /**
      * Get the exit area for a given position.
@@ -224,10 +365,14 @@ public class WarehouseEnvironment {
     
     /**
      * Check if a position is an entry area.
+     * Entry areas are 2x1 cells (2 rows, 1 column), check if position is within.
      */
     public boolean isEntryArea(int[] position) {
         for (EntryArea entry : entryAreas) {
-            if (entry.getX() == position[0] && entry.getY() == position[1]) {
+            int ex = entry.getX();
+            int ey = entry.getY();
+            // Entry area is 2 rows x 1 column
+            if (position[0] >= ex && position[0] < ex + 2 && position[1] == ey) {
                 return true;
             }
         }
@@ -236,10 +381,15 @@ public class WarehouseEnvironment {
     
     /**
      * Check if a position is an exit area.
+     * Exit areas are 2x2 cells, so we check if position is within that 2x2 block.
      */
     public boolean isExitArea(int[] position) {
         for (ExitArea exit : exitAreas) {
-            if (exit.getX() == position[0] && exit.getY() == position[1]) {
+            int ex = exit.getX();
+            int ey = exit.getY();
+            // Exit area is 2x2, check if position is within that block
+            if (position[0] >= ex && position[0] < ex + 2 &&
+                position[1] >= ey && position[1] < ey + 2) {
                 return true;
             }
         }
@@ -248,10 +398,15 @@ public class WarehouseEnvironment {
     
     /**
      * Check if a position is an intermediate area.
+     * Intermediate areas are 2x2 cells, check if position is within.
      */
     public boolean isIntermediateArea(int[] position) {
         for (IntermediateArea area : intermediateAreas) {
-            if (area.getX() == position[0] && area.getY() == position[1]) {
+            int ax = area.getX();
+            int ay = area.getY();
+            // Intermediate area is 2x2
+            if (position[0] >= ax && position[0] < ax + 2 &&
+                position[1] >= ay && position[1] < ay + 2) {
                 return true;
             }
         }

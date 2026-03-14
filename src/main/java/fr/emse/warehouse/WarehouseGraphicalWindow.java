@@ -480,6 +480,7 @@ public class WarehouseGraphicalWindow extends JFrame {
         for (int r = 0; r < rows; r++) {
             for (int c = 0; c < cols; c++) {
                 ColorSimpleCell cell = grid[r][c];
+                // GUI coordinates: px=horizontal (column-based), py=vertical (row-based)
                 int px = c * cellWidth;
                 int py = r * cellHeight;
 
@@ -633,6 +634,8 @@ public class WarehouseGraphicalWindow extends JFrame {
 
         if (isColorMatch(color, COLOR_ROBOT_BLUE, 50))    return "robot_empty";
         if (isColorMatch(color, COLOR_ROBOT_MAGENTA, 50)) return "robot_carrying";
+        // Low-battery robots are red (255, 50, 50) — show as idle robot icon
+        if (isColorMatch(color, new int[]{255, 50, 50}, 50)) return "robot_empty";
         if (isColorMatch(color, COLOR_HUMAN, 50) ||
             (color[0] > 200 && color[1] > 150 && color[2] < 100)) return "human";
 
